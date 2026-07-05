@@ -18,6 +18,8 @@
 
 package dm;
   localparam logic [3:0] DbgVersion013 = 4'h2;
+  localparam logic [3:0] DbgVersion10 = 4'h3;///new updated version #512///////////////////////////////////  
+
   // size of program buffer in junks of 32-bit words
   localparam logic [4:0] ProgBufSize   = 5'h8;
 
@@ -26,8 +28,8 @@ package dm;
 
   // address to which a hart should jump when it was requested to halt
   localparam logic [63:0] HaltAddress = 64'h800;
-  localparam logic [63:0] ResumeAddress = HaltAddress + 8;
-  localparam logic [63:0] ExceptionAddress = HaltAddress + 16;
+  localparam logic [63:0] ResumeAddress = HaltAddress + 4;
+  localparam logic [63:0] ExceptionAddress = HaltAddress + 8;
 
   // address where data0-15 is shadowed or if shadowed in a CSR
   // address of the first CSR used for shadowing the data
@@ -99,7 +101,9 @@ package dm;
   localparam logic [2:0] CauseSingleStep = 3'h4;
 
   typedef struct packed {
-    logic [31:23] zero1;
+    logic [31:25] zero1;
+    logic         ndmresetpending;//new updated version 1.0 #594///////////////////////////////////
+    logic         stickyunavail;//new updated version 1.0 #520///////////////////////////////////
     logic         impebreak;
     logic [21:20] zero0;
     logic         allhavereset;
@@ -126,11 +130,12 @@ package dm;
     logic         resumereq;
     logic         hartreset;
     logic         ackhavereset;
-    logic         zero1;
+    logic         ackunavail;
     logic         hasel;
     logic [25:16] hartsello;
     logic [15:6]  hartselhi;
-    logic [5:4]   zero0;
+    logic         setkeepalive;//new bit in version 1.0 #592///////////////////////////////////
+    logic         clrkeepalive;//new bit in version 1.0 #592///////////////////////////////////
     logic         setresethaltreq;
     logic         clrresethaltreq;
     logic         ndmreset;
@@ -157,7 +162,7 @@ package dm;
     logic [28:24] progbufsize;
     logic [23:13] zero2;
     logic         busy;
-    logic         zero1;
+    logic         relaxedpriv;// new bit in version 1.0 #536
     cmderr_e      cmderr;
     logic [7:4]   zero0;
     logic [3:0]   datacount;
@@ -197,12 +202,6 @@ package dm;
     DTM_WRITE = 2'h2
   } dtm_op_e;
 
-  typedef enum logic [1:0] {
-    DTM_SUCCESS = 2'h0,
-    DTM_ERR     = 2'h2,
-    DTM_BUSY    = 2'h3
-  } dtm_op_status_e;
-
   typedef struct packed {
     logic [31:29] sbversion;
     logic [28:23] zero0;
@@ -221,6 +220,8 @@ package dm;
     logic         sbaccess8;
   } sbcs_t;
 
+  localparam logic [1:0] DTM_SUCCESS = 2'h0;
+
   typedef struct packed {
     logic [6:0]  addr;
     dtm_op_e     op;
@@ -231,17 +232,6 @@ package dm;
     logic [31:0] data;
     logic [1:0]  resp;
   } dmi_resp_t;
-
-  typedef struct packed {
-    logic [31:18] zero1;
-    logic         dmihardreset;
-    logic         dmireset;
-    logic         zero0;
-    logic [14:12] idle;
-    logic [11:10] dmistat;
-    logic [9:4]   abits;
-    logic [3:0]   version;
-  } dtmcs_t;
 
   // privilege levels
   typedef enum logic[1:0] {
@@ -421,6 +411,12 @@ package dm;
                                         logic [4:0] dest);
     // rs1, CSRRS, rd, OpCode System
     return {csr, 5'h0, 3'h2, dest, 7'h73};
+  endfunction
+
+  function automatic logic [31:0] csrsi (csr_reg_t  csr,
+                                         logic [4:0] uimm);
+    // CSRRSI: set bits in CSR using 5-bit immediate, rd=x0
+    return {csr, uimm, 3'h6, 5'h0, 7'h73};
   endfunction
 
   function automatic logic [31:0] branch(logic [4:0]  src2,
