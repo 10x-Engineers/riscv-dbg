@@ -180,6 +180,7 @@ module dm_csrs #(
   dm::sbcs_t          sbcs_d, sbcs_q;
   logic [63:0]        sbaddr_d, sbaddr_q;
   logic [63:0]        sbdata_d, sbdata_q;
+  dm::dmcs2_t         dmcs2_d, dmcs2_q; // new version 1.0 #404 and #506 - halt/resume groups
 
   logic [NrHarts-1:0] havereset_d, havereset_q;
   // program buffer
@@ -333,6 +334,7 @@ module dm_csrs #(
     sbaddr_d            = 64'(sbaddress_i);
     sbdata_d            = sbdata_q;
     relaxedpriv_d       = relaxedpriv_q; // default hold — prevents latch inference
+    dmcs2_d             = '0; // new version 1.0 #404 and #506 - halt/resume groups not implemented, always 0
 
     resp_queue_data         = 32'h0;
     cmd_valid_d             = 1'b0;
@@ -382,6 +384,9 @@ module dm_csrs #(
         dm::HaltSum1: resp_queue_data = haltsum1;
         dm::HaltSum2: resp_queue_data = haltsum2;
         dm::HaltSum3: resp_queue_data = haltsum3;
+        // new version 1.0 #404 and #506 - dmcs2 always reads back 0: no halt groups (#404),
+        // no resume groups (#506), no DM external triggers on this target
+        dm::DMCS2: resp_queue_data = dmcs2_q;
         dm::SBCS: begin
           resp_queue_data = sbcs_q;
         end
@@ -437,6 +442,10 @@ module dm_csrs #(
         end
         dm::DMStatus:; // write are ignored to R/O register
         dm::Hartinfo:; // hartinfo is R/O
+        // new version 1.0 #404 and #506 - writes to dmcs2 are ignored: halt groups (#404) and
+        // resume groups (#506) are not implemented, so hgselect/grouptype/group/dmexttrigger
+        // stay tied to 0 regardless of what the debugger writes (see dmcs2_d default above)
+        dm::DMCS2:;
         // only command error is write-able
         dm::AbstractCS: begin // W1C
           // Gets set if an abstract command fails. The bits in this
@@ -571,7 +580,7 @@ module dm_csrs #(
     dmcontrol_d.clrresethaltreq = 1'b0;
     dmcontrol_d.ackunavail      = '0;
     dmcontrol_d.setkeepalive    = '0;
-    dmcontrol_d.clrkeepalive    = '0;
+      dmcontrol_d.clrkeepalive    = '0;
     // Non-writeable, clear only
     dmcontrol_d.ackhavereset    = 1'b0;
     if (!dmcontrol_q.resumereq && dmcontrol_d.resumereq) begin
@@ -679,7 +688,8 @@ module dm_csrs #(
       sbdata_q       <= '0;
       havereset_q    <= '1;
       relaxedpriv_q  <= '0; // new bit in version 1.0 #536
-      keepalive_q     <= '0; // new bit in version 1.0 #592
+      keepalive_q    <= '0; // new bit in version 1.0 #592
+      dmcs2_q        <= '0; // new version 1.0 #404 and #506 - halt/resume groups
     end else begin
       havereset_q    <= SelectableHarts & havereset_d;
       // synchronous re-set of debug module, active-low, except for dmactive
@@ -710,6 +720,7 @@ module dm_csrs #(
         sbcs_q                       <= '0;
         sbaddr_q                     <= '0;
         sbdata_q                     <= '0;
+        dmcs2_q                      <= '0; // new version 1.0 #404 and #506 - halt/resume groups
       end else begin
         dmcontrol_q                  <= dmcontrol_d;
         cmderr_q                     <= cmderr_d;
@@ -723,6 +734,7 @@ module dm_csrs #(
         sbdata_q                     <= sbdata_d;
         relaxedpriv_q                <= relaxedpriv_d; // new bit in version 1.0 #536
         keepalive_q                  <= keepalive_d; // new bit in version 1.0 #592
+        dmcs2_q                      <= dmcs2_d; // new version 1.0 #404 and #506 - halt/resume groups
       end
     end
   end

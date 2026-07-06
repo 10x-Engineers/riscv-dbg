@@ -63,6 +63,7 @@ package dm;
     DevTreeAddr2 = 8'h1B,
     DevTreeAddr3 = 8'h1C,
     NextDM       = 8'h1D,
+    Custom       = 8'h1F, // new version 1.0 #406 - reserved DMI space for non-standard use, not implemented, reads 0/writes ignored
     ProgBuf0     = 8'h20,
     ProgBuf1     = 8'h21,
     ProgBuf2     = 8'h22,
@@ -80,6 +81,7 @@ package dm;
     ProgBuf14    = 8'h2E,
     ProgBuf15    = 8'h2F,
     AuthData     = 8'h30,
+    DMCS2        = 8'h32, // new version 1.0 #404 and #506 - halt groups and resume groups control/status
     HaltSum2     = 8'h34,
     HaltSum3     = 8'h35,
     SBAddress3   = 8'h37,
@@ -91,7 +93,24 @@ package dm;
     SBData1      = 8'h3D,
     SBData2      = 8'h3E,
     SBData3      = 8'h3F,
-    HaltSum0     = 8'h40
+    HaltSum0     = 8'h40,
+    // new version 1.0 #406 - reserved DMI space for non-standard use, not implemented, reads 0/writes ignored
+    Custom0      = 8'h70,
+    Custom1      = 8'h71,
+    Custom2      = 8'h72,
+    Custom3      = 8'h73,
+    Custom4      = 8'h74,
+    Custom5      = 8'h75,
+    Custom6      = 8'h76,
+    Custom7      = 8'h77,
+    Custom8      = 8'h78,
+    Custom9      = 8'h79,
+    Custom10     = 8'h7A,
+    Custom11     = 8'h7B,
+    Custom12     = 8'h7C,
+    Custom13     = 8'h7D,
+    Custom14     = 8'h7E,
+    Custom15     = 8'h7F
   } dm_csr_e;
 
   // debug causes
@@ -219,6 +238,19 @@ package dm;
     logic         sbaccess16;
     logic         sbaccess8;
   } sbcs_t;
+
+  // new version 1.0 #404 and #506 - dmcs2: halt groups (#404) and resume groups (#506)
+  // are not implemented on this target. Every field is tied to the value the spec
+  // requires for the "not implemented" case, so the register always reads back 0
+  // and writes to it have no effect. See dm_csrs.sv for the read/write handling.
+  typedef struct packed {
+    logic [31:12] zero1;
+    logic         grouptype;    // #506 resume-group view; tied 0, resume groups not implemented
+    logic [10:7]  dmexttrigger; // no DM external triggers exist; tied 0
+    logic [6:2]   group;        // #404 halt-group number; tied 0, halt groups not implemented
+    logic         hgwrite;      // W1, no effect since there is nothing to apply it to
+    logic         hgselect;     // must be tied 0: no DM external triggers exist
+  } dmcs2_t;
 
   localparam logic [1:0] DTM_SUCCESS = 2'h0;
 
