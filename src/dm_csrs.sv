@@ -580,7 +580,7 @@ module dm_csrs #(
     dmcontrol_d.clrresethaltreq = 1'b0;
     dmcontrol_d.ackunavail      = '0;
     dmcontrol_d.setkeepalive    = '0;
-      dmcontrol_d.clrkeepalive    = '0;
+    dmcontrol_d.clrkeepalive    = '0;
     // Non-writeable, clear only
     dmcontrol_d.ackhavereset    = 1'b0;
     if (!dmcontrol_q.resumereq && dmcontrol_d.resumereq) begin
@@ -688,7 +688,7 @@ module dm_csrs #(
       sbdata_q       <= '0;
       havereset_q    <= '1;
       relaxedpriv_q  <= '0; // new bit in version 1.0 #536
-      keepalive_q    <= '0; // new bit in version 1.0 #592
+      keepalive_q     <= '0; // new bit in version 1.0 #592
       dmcs2_q        <= '0; // new version 1.0 #404 and #506 - halt/resume groups
     end else begin
       havereset_q    <= SelectableHarts & havereset_d;
