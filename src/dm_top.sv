@@ -96,6 +96,7 @@ module dm_top #(
   logic                             sbbusy;
   logic                             sberror_valid;
   logic [2:0]                       sberror;
+  logic                             relaxedpriv; // new internal wire for version 1.0 #536
 
 
   dm_csrs #(
