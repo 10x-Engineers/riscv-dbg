@@ -22,10 +22,8 @@ module dm_csrs #(
 ) (
   input  logic                              clk_i,           // Clock
   input  logic                              rst_ni,          // Asynchronous reset active low
-  input  logic [31:0]                       next_dm_addr_i,  // Static next_dm word address.
   input  logic                              testmode_i,
-  input  logic                              dmi_rst_ni,      // sync. DTM reset,
-                                                             // active-low
+  input  logic                              dmi_rst_ni,      // Debug Module Intf reset active-low
   input  logic                              dmi_req_valid_i,
   output logic                              dmi_req_ready_o,
   input  dm::dmi_req_t                      dmi_req_i,
@@ -35,7 +33,6 @@ module dm_csrs #(
   output dm::dmi_resp_t                     dmi_resp_o,
   // global ctrl
   output logic                              ndmreset_o,      // non-debug module reset active-high
-  input  logic                              ndmreset_ack_i,  // non-debug module reset ack pulse
   output logic                              dmactive_o,      // 1 -> debug-module is active,
                                                              // 0 -> synchronous re-set
   // hart status
@@ -51,6 +48,8 @@ module dm_csrs #(
 
   output logic                              cmd_valid_o,       // debugger writing to cmd field
   output dm::command_t                      cmd_o,             // abstract command
+  output logic                              relaxedpriv_o,     // new output bit for version 1.0 #536
+  output logic [NrHarts-1:0]               keepalive_o,       // new output per-hart for version 1.0 #592
   input  logic                              cmderror_valid_i,  // an error occurred
   input  dm::cmderr_e                       cmderror_i,        // this error occurred
   input  logic                              cmdbusy_i,         // cmd is currently busy executing
@@ -92,6 +91,7 @@ module dm_csrs #(
   logic        resp_queue_empty;
   logic        resp_queue_push;
   logic        resp_queue_pop;
+  logic [31:0] resp_queue_data;
 
   localparam dm::dm_csr_e DataEnd = dm::dm_csr_e'(dm::Data0 + {4'h0, dm::DataCount} - 8'h1);
   localparam dm::dm_csr_e ProgBufEnd = dm::dm_csr_e'(dm::ProgBuf0 + {4'h0, dm::ProgBufSize} - 8'h1);
@@ -105,18 +105,26 @@ module dm_csrs #(
   logic [((NrHarts-1)/2**15+1)*32-1:0] halted_flat2;
   logic [31:0] halted_flat3;
 
-  // haltsum0
-  logic [14:0] hartsel_idx0;
-  always_comb begin : p_haltsum0
-    halted              = '0;
-    haltsum0            = '0;
-    hartsel_idx0        = hartsel_o[19:5];
-    halted[NrHarts-1:0] = halted_i;
-    halted_reshaped0    = halted;
-    if (hartsel_idx0 < 15'((NrHarts-1)/2**5+1)) begin
-      haltsum0 = halted_reshaped0[hartsel_idx0];
+  ////new Incompatible Changes from 0.13 to 1.0//////////
+ // haltsum0: single-hart shortcut (RISC-V Debug Spec 1.0 #505)
+  if (NrHarts == 1) begin : gen_haltsum0_single
+    always_comb begin : p_haltsum0
+      haltsum0 = {31'b0, halted_i[0]}; // direct wire, no tree
+    end
+  end else begin : gen_haltsum0_multi
+    logic [14:0] hartsel_idx0;              //old logic for multi-hart case in this section
+    always_comb begin : p_haltsum0
+      halted              = '0;
+      haltsum0            = '0;
+      hartsel_idx0        = hartsel_o[19:5];
+      halted[NrHarts-1:0] = halted_i;
+      halted_reshaped0    = halted;
+      if (hartsel_idx0 < 15'((NrHarts-1)/2**5+1)) begin
+        haltsum0 = halted_reshaped0[hartsel_idx0];
+      end
     end
   end
+  ///////////////////////////end of incompatible change #512////////////////////////
 
   // haltsum1
   logic [9:0] hartsel_idx1;
@@ -172,16 +180,28 @@ module dm_csrs #(
   dm::sbcs_t          sbcs_d, sbcs_q;
   logic [63:0]        sbaddr_d, sbaddr_q;
   logic [63:0]        sbdata_d, sbdata_q;
+  dm::dmcs2_t         dmcs2_d, dmcs2_q; // new version 1.0 #404 and #506 - halt/resume groups
 
   logic [NrHarts-1:0] havereset_d, havereset_q;
   // program buffer
   logic [dm::ProgBufSize-1:0][31:0] progbuf_d, progbuf_q;
   logic [dm::DataCount-1:0][31:0] data_d, data_q;
+  //stickyunavail bits declaration for new version 1.0 #520
+  logic [NrHarts-1:0] stickyunavail_d, stickyunavail_q;
+  logic [NrHarts-1:0] unavailable_effective;
+  //relaxedpriv bit declaration for new version 1.0 #536
+  logic relaxedpriv_d, relaxedpriv_q;
+  //setkeepalive and clrkeepalive bits declaration for new version 1.0 #592
+  logic [NrHarts-1:0] keepalive_d, keepalive_q;
+
+  // RISC-V Debug Spec 1.0 #566 - dmactive poll semantics
+  logic [3:0] dmactive_shutdown_counter;
+  logic       dmactive_transitioning;
 
   logic [HartSelLen-1:0] selected_hart;
 
-  dm::dmi_resp_t resp_queue_inp;
-
+  // a successful response returns zero
+  assign dmi_resp_o.resp = dm::DTM_SUCCESS;
   assign dmi_resp_valid_o     = ~resp_queue_empty;
   assign dmi_req_ready_o      = ~resp_queue_full;
   assign resp_queue_push      = dmi_req_valid_i & dmi_req_ready_o;
@@ -201,6 +221,31 @@ module dm_csrs #(
                              halted_aligned;
   assign resumeack_aligned   = NrHartsAligned'(resumeack_i);
   assign unavailable_aligned = NrHartsAligned'(unavailable_i);
+  //new version 1.0 #520 
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      stickyunavail_q <= '0;
+    end else begin
+      stickyunavail_q <= stickyunavail_d;
+    end
+  end
+  always_comb begin : stickyunavail_logic
+    stickyunavail_d = stickyunavail_q; // hold by default (makes this truly sticky)
+    for(int i=0; i<NrHarts; i++) begin
+      if(unavailable_aligned[i])
+        stickyunavail_d[i] = 1'b1;
+      // ackunavail is write-1-to-clear (dmcontrol bit 27). dmcontrol_d.ackunavail
+      // is forced to 0 after the write case, so dmcontrol_q.ackunavail is always 0.
+      // Detect the clear by watching the raw DMI write directly.
+      if (dmi_req_valid_i && dmi_req_ready_o && (dtm_op == dm::DTM_WRITE) &&
+          (dm_csr_addr == dm::DMControl) && dmi_req_i.data[27] &&
+          (HartSelLen'(i) == selected_hart))
+        stickyunavail_d[i] = 1'b0;
+    end
+  end
+  assign unavailable_effective = unavailable_aligned[NrHarts-1:0] | stickyunavail_q;
+  /////////////////////end of new version 1.0 #520//////////////////////
+
   assign halted_aligned      = NrHartsAligned'(halted_i);
 
   assign havereset_d         = NrHarts'(havereset_d_aligned);
@@ -224,13 +269,13 @@ module dm_csrs #(
   // types instead.
   assign autoexecdata_idx = 4'({dm_csr_addr} - {dm::Data0});
 
-  always_comb (*xprop_off *) begin : csr_read_write
+  always_comb begin : csr_read_write
     // --------------------
     // Static Values (R/O)
     // --------------------
     // dmstatus
     dmstatus    = '0;
-    dmstatus.version = dm::DbgVersion013;
+    dmstatus.version = dm::DbgVersion10; ////new updated version change #512///////////////////////////////////
     // no authentication implemented
     dmstatus.authenticated = 1'b1;
     // we do not support halt-on-reset sequence
@@ -238,13 +283,27 @@ module dm_csrs #(
     // TODO(zarubaf) things need to change here if we implement the array mask
     dmstatus.allhavereset = havereset_q_aligned[selected_hart];
     dmstatus.anyhavereset = havereset_q_aligned[selected_hart];
+    // ndmresetpending and stickyunavail are new fields in dmstatus for new version 1.0. 
+    // We set ndmresetpending whenever we detect an ndmreset request. This bit gets cleared when the debug module is reset (which happens synchronously to dmactive going low). The spec does not define exactly when this bit should get cleared, but this seems to be a reasonable choice.
+    dmstatus.ndmresetpending = dmcontrol_q.ndmreset;
+    // #520: stickyunavail is a global capability/mode bit (spec dm_registers.xml,
+    // dmstatus bit 23) declaring that allunavail/anyunavail behave sticky --
+    // NOT a per-hart status bit itself (that's what allunavail/anyunavail are
+    // for). Stays hardcoded 1'b1: this implementation always applies sticky
+    // semantics, via stickyunavail_q/unavailable_effective below feeding
+    // allunavail/anyunavail. (riscv-dbg-vip#117 review by tufailrizvi-debug,
+    // riscv-dbg PR#2: making this per-hart would wrongly report "not sticky"
+    // for any hart that never went unavailable.)
+    dmstatus.stickyunavail = 1'b1;
 
     dmstatus.allresumeack = resumeack_aligned[selected_hart];
     dmstatus.anyresumeack = resumeack_aligned[selected_hart];
 
-    dmstatus.allunavail   = unavailable_aligned[selected_hart];
-    dmstatus.anyunavail   = unavailable_aligned[selected_hart];
-
+    //dmstatus.allunavail   = unavailable_aligned[selected_hart];
+    // dmstatus.anyunavail   = unavailable_aligned[selected_hart];
+///////////////new changing the logic of allunavail and anyavail/////////////////
+    dmstatus.allunavail   = unavailable_effective[selected_hart];
+    dmstatus.anyunavail   = unavailable_effective[selected_hart];
     // as soon as we are out of the legal Hart region tell the debugger
     // that there are only non-existent harts
     dmstatus.allnonexistent = logic'(32'(hartsel_o) > (NrHarts - 1));
@@ -252,11 +311,12 @@ module dm_csrs #(
 
     // We are not allowed to be in multiple states at once. This is a to
     // make the running/halted and unavailable states exclusive.
-    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavailable_aligned[selected_hart];
-    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavailable_aligned[selected_hart];
-
-    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavailable_aligned[selected_hart];
-    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavailable_aligned[selected_hart];
+    //chsange for new version 1.0 #520, unavailable_effective is used here to make sure that if a hart is unavailable it cannot be also reported as halted
+    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
+    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
+    //chsange for new version 1.0 #520, unavailable_effective is used here to make sure that if a hart is unavailable it cannot be also reported as halted
+    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
+    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
 
     // abstractcs
     abstractcs = '0;
@@ -264,6 +324,7 @@ module dm_csrs #(
     abstractcs.progbufsize = dm::ProgBufSize;
     abstractcs.busy = cmdbusy_i;
     abstractcs.cmderr = cmderr_q;
+    abstractcs.relaxedpriv = relaxedpriv_q; // new bit in version 1.0 #536
 
     // abstractautoexec
     abstractauto_d = abstractauto_q;
@@ -279,9 +340,10 @@ module dm_csrs #(
     sbcs_d              = sbcs_q;
     sbaddr_d            = 64'(sbaddress_i);
     sbdata_d            = sbdata_q;
+    relaxedpriv_d       = relaxedpriv_q; // default hold — prevents latch inference
+    dmcs2_d             = '0; // new version 1.0 #404 and #506 - halt/resume groups not implemented, always 0
 
-    resp_queue_inp.data     = 32'h0;
-    resp_queue_inp.resp     = dm::DTM_SUCCESS;
+    resp_queue_data         = 32'h0;
     cmd_valid_d             = 1'b0;
     sbaddress_write_valid_o = 1'b0;
     sbdata_read_valid_o     = 1'b0;
@@ -296,70 +358,66 @@ module dm_csrs #(
     if (dmi_req_ready_o && dmi_req_valid_i && dtm_op == dm::DTM_READ) begin
       unique case (dm_csr_addr) inside
         [(dm::Data0):DataEnd]: begin
-          resp_queue_inp.data = data_q[$clog2(dm::DataCount)'(autoexecdata_idx)];
+          resp_queue_data = data_q[dmi_req_i.addr[$clog2(dm::DataCount)-1:0]];
           if (!cmdbusy_i) begin
             // check whether we need to re-execute the command (just give a cmd_valid)
             cmd_valid_d = abstractauto_q.autoexecdata[autoexecdata_idx];
           // An abstract command was executing while one of the data registers was read
-          end else begin
-            resp_queue_inp.resp = dm::DTM_BUSY;
-            if (cmderr_q == dm::CmdErrNone) begin
-              cmderr_d = dm::CmdErrBusy;
-            end
+          end else if (cmderr_q == dm::CmdErrNone) begin
+            cmderr_d = dm::CmdErrBusy;
           end
         end
-        dm::DMControl:    resp_queue_inp.data = dmcontrol_q;
-        dm::DMStatus:     resp_queue_inp.data = dmstatus;
-        dm::Hartinfo:     resp_queue_inp.data = hartinfo_aligned[selected_hart];
-        dm::AbstractCS:   resp_queue_inp.data = abstractcs;
-        dm::AbstractAuto: resp_queue_inp.data = abstractauto_q;
-        dm::Command:      resp_queue_inp.data = '0;
-        dm::NextDM:       resp_queue_inp.data = next_dm_addr_i;
+        dm::DMControl:    resp_queue_data = dmcontrol_q;
+        dm::DMStatus:     resp_queue_data = dmstatus;
+        dm::Hartinfo:     resp_queue_data = hartinfo_aligned[selected_hart];
+        dm::AbstractCS:   resp_queue_data = abstractcs;
+        dm::AbstractAuto: resp_queue_data = abstractauto_q;
+        // command is read-only
+        dm::Command:    resp_queue_data = '0;
+        // Feature #731: progbuf is write-only; reads always return 0
         [(dm::ProgBuf0):ProgBufEnd]: begin
-          resp_queue_inp.data = progbuf_q[dmi_req_i.addr[$clog2(dm::ProgBufSize)-1:0]];
+          resp_queue_data = 32'h0; // RISC-V Debug Spec 1.0 #731 - Progbuf unreadable
           if (!cmdbusy_i) begin
             // check whether we need to re-execute the command (just give a cmd_valid)
             // range of autoexecprogbuf is 31:16
             cmd_valid_d = abstractauto_q.autoexecprogbuf[{1'b1, dmi_req_i.addr[3:0]}];
 
           // An abstract command was executing while one of the progbuf registers was read
-          end else begin
-            resp_queue_inp.resp = dm::DTM_BUSY;
-            if (cmderr_q == dm::CmdErrNone) begin
-              cmderr_d = dm::CmdErrBusy;
-            end
+          end else if (cmderr_q == dm::CmdErrNone) begin
+            cmderr_d = dm::CmdErrBusy;
           end
         end
-        dm::HaltSum0: resp_queue_inp.data = haltsum0;
-        dm::HaltSum1: resp_queue_inp.data = haltsum1;
-        dm::HaltSum2: resp_queue_inp.data = haltsum2;
-        dm::HaltSum3: resp_queue_inp.data = haltsum3;
+        dm::HaltSum0: resp_queue_data = haltsum0;
+        dm::HaltSum1: resp_queue_data = haltsum1;
+        dm::HaltSum2: resp_queue_data = haltsum2;
+        dm::HaltSum3: resp_queue_data = haltsum3;
+        // new version 1.0 #404 and #506 - dmcs2 always reads back 0: no halt groups (#404),
+        // no resume groups (#506), no DM external triggers on this target
+        dm::DMCS2: resp_queue_data = dmcs2_q;
         dm::SBCS: begin
-          resp_queue_inp.data = sbcs_q;
+          resp_queue_data = sbcs_q;
         end
         dm::SBAddress0: begin
-          resp_queue_inp.data = sbaddr_q[31:0];
+          resp_queue_data = sbaddr_q[31:0];
         end
         dm::SBAddress1: begin
-          resp_queue_inp.data = sbaddr_q[63:32];
+          resp_queue_data = sbaddr_q[63:32];
         end
         dm::SBData0: begin
           // access while the SBA was busy
           if (sbbusy_i || sbcs_q.sbbusyerror) begin
             sbcs_d.sbbusyerror = 1'b1;
-            resp_queue_inp.resp = dm::DTM_BUSY;
           end else begin
             sbdata_read_valid_o = (sbcs_q.sberror == '0);
-            resp_queue_inp.data = sbdata_q[31:0];
+            resp_queue_data = sbdata_q[31:0];
           end
         end
         dm::SBData1: begin
           // access while the SBA was busy
           if (sbbusy_i || sbcs_q.sbbusyerror) begin
             sbcs_d.sbbusyerror = 1'b1;
-            resp_queue_inp.resp = dm::DTM_BUSY;
           end else begin
-            resp_queue_inp.data = sbdata_q[63:32];
+            resp_queue_data = sbdata_q[63:32];
           end
         end
         default:;
@@ -377,11 +435,8 @@ module dm_csrs #(
               // check whether we need to re-execute the command (just give a cmd_valid)
               cmd_valid_d = abstractauto_q.autoexecdata[autoexecdata_idx];
             //An abstract command was executing while one of the data registers was written
-            end else begin
-              resp_queue_inp.resp = dm::DTM_BUSY;
-              if (cmderr_q == dm::CmdErrNone) begin
-                cmderr_d = dm::CmdErrBusy;
-              end
+            end else if (cmderr_q == dm::CmdErrNone) begin
+              cmderr_d = dm::CmdErrBusy;
             end
           end
         end
@@ -394,6 +449,10 @@ module dm_csrs #(
         end
         dm::DMStatus:; // write are ignored to R/O register
         dm::Hartinfo:; // hartinfo is R/O
+        // new version 1.0 #404 and #506 - writes to dmcs2 are ignored: halt groups (#404) and
+        // resume groups (#506) are not implemented, so hgselect/grouptype/group/dmexttrigger
+        // stay tied to 0 regardless of what the debugger writes (see dmcs2_d default above)
+        dm::DMCS2:;
         // only command error is write-able
         dm::AbstractCS: begin // W1C
           // Gets set if an abstract command fails. The bits in this
@@ -403,12 +462,10 @@ module dm_csrs #(
           a_abstractcs = dm::abstractcs_t'(dmi_req_i.data);
           // reads during abstract command execution are not allowed
           if (!cmdbusy_i) begin
-            cmderr_d = dm::cmderr_e'(~a_abstractcs.cmderr & cmderr_q);
-          end else begin
-            resp_queue_inp.resp = dm::DTM_BUSY;
-            if (cmderr_q == dm::CmdErrNone) begin
-              cmderr_d = dm::CmdErrBusy;
-            end
+            cmderr_d      = dm::cmderr_e'(~a_abstractcs.cmderr & cmderr_q);
+            relaxedpriv_d = a_abstractcs.relaxedpriv; // new bit in version 1.0 #536
+          end else if (cmderr_q == dm::CmdErrNone) begin
+            cmderr_d = dm::CmdErrBusy;
           end
         end
         dm::Command: begin
@@ -418,25 +475,18 @@ module dm_csrs #(
             command_d = dm::command_t'(dmi_req_i.data);
           // if there was an attempted to write during a busy execution
           // and the cmderror field is zero set the busy error
-          end else begin
-            resp_queue_inp.resp = dm::DTM_BUSY;
-            if (cmderr_q == dm::CmdErrNone) begin
-              cmderr_d = dm::CmdErrBusy;
-            end
+          end else if (cmderr_q == dm::CmdErrNone) begin
+            cmderr_d = dm::CmdErrBusy;
           end
         end
-        dm::NextDM:; // nextdm is R/O
         dm::AbstractAuto: begin
           // this field can only be written legally when there is no command executing
           if (!cmdbusy_i) begin
             abstractauto_d                 = 32'h0;
             abstractauto_d.autoexecdata    = 12'(dmi_req_i.data[dm::DataCount-1:0]);
             abstractauto_d.autoexecprogbuf = 16'(dmi_req_i.data[dm::ProgBufSize-1+16:16]);
-          end else begin
-            resp_queue_inp.resp = dm::DTM_BUSY;
-            if (cmderr_q == dm::CmdErrNone) begin
-              cmderr_d = dm::CmdErrBusy;
-            end
+          end else if (cmderr_q == dm::CmdErrNone) begin
+            cmderr_d = dm::CmdErrBusy;
           end
         end
         [(dm::ProgBuf0):ProgBufEnd]: begin
@@ -449,31 +499,26 @@ module dm_csrs #(
             // range of autoexecprogbuf is 31:16
             cmd_valid_d = abstractauto_q.autoexecprogbuf[{1'b1, dmi_req_i.addr[3:0]}];
           //An abstract command was executing while one of the progbuf registers was written
-          end else begin
-            resp_queue_inp.resp = dm::DTM_BUSY;
-            if (cmderr_q == dm::CmdErrNone) begin
-              cmderr_d = dm::CmdErrBusy;
-            end
+          end else if (cmderr_q == dm::CmdErrNone) begin
+            cmderr_d = dm::CmdErrBusy;
           end
         end
         dm::SBCS: begin
           // access while the SBA was busy
           if (sbbusy_i) begin
             sbcs_d.sbbusyerror = 1'b1;
-            resp_queue_inp.resp = dm::DTM_BUSY;
           end else begin
             sbcs = dm::sbcs_t'(dmi_req_i.data);
             sbcs_d = sbcs;
             // R/W1C
             sbcs_d.sbbusyerror = sbcs_q.sbbusyerror & (~sbcs.sbbusyerror);
-            sbcs_d.sberror     = (|sbcs.sberror) ? 3'b0 : sbcs_q.sberror;
+            sbcs_d.sberror     = sbcs_q.sberror     & (~sbcs.sberror);
           end
         end
         dm::SBAddress0: begin
           // access while the SBA was busy
           if (sbbusy_i || sbcs_q.sbbusyerror) begin
             sbcs_d.sbbusyerror = 1'b1;
-            resp_queue_inp.resp = dm::DTM_BUSY;
           end else begin
             sbaddr_d[31:0] = dmi_req_i.data;
             sbaddress_write_valid_o = (sbcs_q.sberror == '0);
@@ -483,7 +528,6 @@ module dm_csrs #(
           // access while the SBA was busy
           if (sbbusy_i || sbcs_q.sbbusyerror) begin
             sbcs_d.sbbusyerror = 1'b1;
-            resp_queue_inp.resp = dm::DTM_BUSY;
           end else begin
             sbaddr_d[63:32] = dmi_req_i.data;
           end
@@ -492,7 +536,6 @@ module dm_csrs #(
           // access while the SBA was busy
           if (sbbusy_i || sbcs_q.sbbusyerror) begin
            sbcs_d.sbbusyerror = 1'b1;
-           resp_queue_inp.resp = dm::DTM_BUSY;
           end else begin
             sbdata_d[31:0] = dmi_req_i.data;
             sbdata_write_valid_o = (sbcs_q.sberror == '0);
@@ -502,7 +545,6 @@ module dm_csrs #(
           // access while the SBA was busy
           if (sbbusy_i || sbcs_q.sbbusyerror) begin
            sbcs_d.sbbusyerror = 1'b1;
-           resp_queue_inp.resp = dm::DTM_BUSY;
           end else begin
             sbdata_d[63:32] = dmi_req_i.data;
           end
@@ -520,8 +562,8 @@ module dm_csrs #(
       data_d = data_i;
     end
 
-    // set the havereset flag when the ndmreset completed
-    if (ndmreset_ack_i) begin
+    // set the havereset flag when we did a ndmreset
+    if (ndmreset_o) begin
       havereset_d_aligned[NrHarts-1:0] = '1;
     end
     // -------------
@@ -543,8 +585,9 @@ module dm_csrs #(
     dmcontrol_d.hartreset       = 1'b0;
     dmcontrol_d.setresethaltreq = 1'b0;
     dmcontrol_d.clrresethaltreq = 1'b0;
-    dmcontrol_d.zero1           = '0;
-    dmcontrol_d.zero0           = '0;
+    dmcontrol_d.ackunavail      = '0;
+    dmcontrol_d.setkeepalive    = '0;
+    dmcontrol_d.clrkeepalive    = '0;
     // Non-writeable, clear only
     dmcontrol_d.ackhavereset    = 1'b0;
     if (!dmcontrol_q.resumereq && dmcontrol_d.resumereq) begin
@@ -553,18 +596,25 @@ module dm_csrs #(
     if (dmcontrol_q.resumereq && resumeack_i) begin
       dmcontrol_d.resumereq = 1'b0;
     end
-    // WARL behavior of hartsel, depending on NrHarts.
-    // If NrHarts = 1 this is just masked to all-zeros.
-    {dmcontrol_d.hartselhi, dmcontrol_d.hartsello} &= (2**$clog2(NrHarts))-1;
+
+    //setkeepalive and clrkeepalive are new bits in version 1.0 #592.
+    if(dmcontrol_d.setkeepalive) begin
+      keepalive_d[selected_hart] = 1'b1;
+    end
+    if(dmcontrol_d.clrkeepalive) begin
+      keepalive_d[selected_hart] = 1'b0;
+    end
+
     // static values for dcsr
     sbcs_d.sbversion            = 3'd1;
     sbcs_d.sbbusy               = sbbusy_i;
     sbcs_d.sbasize              = $bits(sbcs_d.sbasize)'(BusWidth);
-    sbcs_d.sbaccess128          = logic'(BusWidth >= 32'd128);
-    sbcs_d.sbaccess64           = logic'(BusWidth >= 32'd64);
-    sbcs_d.sbaccess32           = logic'(BusWidth >= 32'd32);
-    sbcs_d.sbaccess16           = logic'(BusWidth >= 32'd16);
-    sbcs_d.sbaccess8            = logic'(BusWidth >= 32'd8);
+    sbcs_d.sbaccess128          = 1'b0;
+    sbcs_d.sbaccess64           = logic'(BusWidth == 32'd64);
+    sbcs_d.sbaccess32           = logic'(BusWidth == 32'd32);
+    sbcs_d.sbaccess16           = 1'b0;
+    sbcs_d.sbaccess8            = 1'b0;
+    sbcs_d.sbaccess             = (BusWidth == 32'd64) ? 3'd3 : 3'd2;
   end
 
   // output multiplexer
@@ -579,7 +629,28 @@ module dm_csrs #(
     end
   end
 
-  assign dmactive_o  = dmcontrol_q.dmactive;
+  // RISC-V Debug Spec 1.0 #566 - shutdown countdown on dmactive 1→0 transition
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      dmactive_shutdown_counter <= 4'd0;
+      dmactive_transitioning    <= 1'b0;
+    end else begin
+      if (dmcontrol_q.dmactive && !dmcontrol_d.dmactive) begin
+        // detected 1→0 edge: start 5-cycle shutdown countdown
+        dmactive_transitioning    <= 1'b1;
+        dmactive_shutdown_counter <= 4'd5;
+      end else if (dmactive_transitioning) begin
+        if (dmactive_shutdown_counter == 4'd0) begin
+          dmactive_transitioning <= 1'b0;
+        end else begin
+          dmactive_shutdown_counter <= dmactive_shutdown_counter - 4'd1;
+        end
+      end
+    end
+  end
+
+  // RISC-V Debug Spec 1.0 #566 - dmactive_o stays high during 5-cycle shutdown countdown
+  assign dmactive_o  = dmcontrol_q.dmactive || dmactive_transitioning;
   assign cmd_o       = command_q;
   assign cmd_valid_o = cmd_valid_q;
   assign progbuf_o   = progbuf_q;
@@ -590,21 +661,21 @@ module dm_csrs #(
   assign ndmreset_o = dmcontrol_q.ndmreset;
 
   // response FIFO
-  fifo_v3 #(
-    .dtype            ( logic [$bits(dmi_resp_o)-1:0] ),
-    .DEPTH            ( 2                             )
+  fifo_v2 #(
+    .dtype            ( logic [31:0]         ),
+    .DEPTH            ( 2                    )
   ) i_fifo (
-    .clk_i,
-    .rst_ni,
-    .flush_i          ( ~dmi_rst_ni          ), // Flush the queue if the DTM is
-                                                // reset
+    .clk_i            ( clk_i                ),
+    .rst_ni           ( dmi_rst_ni           ), // reset only when system is re-set
+    .flush_i          ( 1'b0                 ), // we do not need to flush this queue
     .testmode_i       ( testmode_i           ),
     .full_o           ( resp_queue_full      ),
     .empty_o          ( resp_queue_empty     ),
-    .usage_o          (                      ),
-    .data_i           ( resp_queue_inp       ),
+    .alm_full_o       (                      ),
+    .alm_empty_o      (                      ),
+    .data_i           ( resp_queue_data      ),
     .push_i           ( resp_queue_push      ),
-    .data_o           ( dmi_resp_o           ),
+    .data_o           ( dmi_resp_o.data      ),
     .pop_i            ( resp_queue_pop       )
   );
 
@@ -619,10 +690,13 @@ module dm_csrs #(
       abstractauto_q <= '0;
       progbuf_q      <= '0;
       data_q         <= '0;
-      sbcs_q         <= '{default: '0,  sbaccess: 3'd2};
+      sbcs_q         <= '0;
       sbaddr_q       <= '0;
       sbdata_q       <= '0;
       havereset_q    <= '1;
+      relaxedpriv_q  <= '0; // new bit in version 1.0 #536
+      keepalive_q     <= '0; // new bit in version 1.0 #592
+      dmcs2_q        <= '0; // new version 1.0 #404 and #506 - halt/resume groups
     end else begin
       havereset_q    <= SelectableHarts & havereset_d;
       // synchronous re-set of debug module, active-low, except for dmactive
@@ -631,25 +705,29 @@ module dm_csrs #(
         dmcontrol_q.resumereq        <= '0;
         dmcontrol_q.hartreset        <= '0;
         dmcontrol_q.ackhavereset     <= '0;
-        dmcontrol_q.zero1            <= '0;
+        dmcontrol_q.ackunavail       <= '0;
         dmcontrol_q.hasel            <= '0;
         dmcontrol_q.hartsello        <= '0;
         dmcontrol_q.hartselhi        <= '0;
-        dmcontrol_q.zero0            <= '0;
+        dmcontrol_q.setkeepalive     <= '0;
+        dmcontrol_q.clrkeepalive     <= '0;
         dmcontrol_q.setresethaltreq  <= '0;
         dmcontrol_q.clrresethaltreq  <= '0;
         dmcontrol_q.ndmreset         <= '0;
+        keepalive_q                  <= '0; // new bit in version 1.0 #592
         // this is the only write-able bit during reset
         dmcontrol_q.dmactive         <= dmcontrol_d.dmactive;
         cmderr_q                     <= dm::CmdErrNone;
+        relaxedpriv_q                <= '0;// new bit in version 1.0 #536
         command_q                    <= '0;
         cmd_valid_q                  <= '0;
         abstractauto_q               <= '0;
         progbuf_q                    <= '0;
         data_q                       <= '0;
-        sbcs_q                       <= '{default: '0,  sbaccess: 3'd2};
+        sbcs_q                       <= '0;
         sbaddr_q                     <= '0;
         sbdata_q                     <= '0;
+        dmcs2_q                      <= '0; // new version 1.0 #404 and #506 - halt/resume groups
       end else begin
         dmcontrol_q                  <= dmcontrol_d;
         cmderr_q                     <= cmderr_d;
@@ -661,8 +739,12 @@ module dm_csrs #(
         sbcs_q                       <= sbcs_d;
         sbaddr_q                     <= sbaddr_d;
         sbdata_q                     <= sbdata_d;
+        relaxedpriv_q                <= relaxedpriv_d; // new bit in version 1.0 #536
+        keepalive_q                  <= keepalive_d; // new bit in version 1.0 #592
+        dmcs2_q                      <= dmcs2_d; // new version 1.0 #404 and #506 - halt/resume groups
       end
     end
   end
-
+assign relaxedpriv_o = relaxedpriv_q; // new bit in version 1.0 #536
+assign keepalive_o   = keepalive_q; // new bit in version 1.0 #592
 endmodule : dm_csrs
