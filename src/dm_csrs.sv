@@ -286,8 +286,10 @@ module dm_csrs #(
     // ndmresetpending and stickyunavail are new fields in dmstatus for new version 1.0. 
     // We set ndmresetpending whenever we detect an ndmreset request. This bit gets cleared when the debug module is reset (which happens synchronously to dmactive going low). The spec does not define exactly when this bit should get cleared, but this seems to be a reasonable choice.
     dmstatus.ndmresetpending = dmcontrol_q.ndmreset;
-     // In new verison 1.0 we can enablbled stickyunavail by turining the bit to 1
-    dmstatus.stickyunavail = 1'b1;
+    // #520: the currently-selected hart's sticky unavailable bit, tracked by
+    // stickyunavail_q above (was hardcoded to 1'b1, permanently asserted
+    // regardless of any hart ever actually going unavailable -- riscv-dbg-vip#117).
+    dmstatus.stickyunavail = stickyunavail_q[selected_hart];
 
     dmstatus.allresumeack = resumeack_aligned[selected_hart];
     dmstatus.anyresumeack = resumeack_aligned[selected_hart];
