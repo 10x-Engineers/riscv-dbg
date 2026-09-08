@@ -221,7 +221,16 @@ module dm_csrs #(
                              halted_aligned;
   assign resumeack_aligned   = NrHartsAligned'(resumeack_i);
   assign unavailable_aligned = NrHartsAligned'(unavailable_i);
-  //new version 1.0 #520 
+
+  // Declared here rather than with the other helper variables below, because
+  // the stickyunavail block that follows reads it: Xcelium enforces IEEE 12.5
+  // declaration-before-use and rejects the later declaration outright
+  // (*E,UNDIDN), while Questa accepts it. The continuous assignment is
+  // order-independent, so this is a move, not a behavioural change.
+  dm::dm_csr_e dm_csr_addr;
+  assign dm_csr_addr = dm::dm_csr_e'({1'b0, dmi_req_i.addr});
+
+  //new version 1.0 #520
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       stickyunavail_q <= '0;
@@ -258,13 +267,12 @@ module dm_csrs #(
   end
 
   // helper variables
-  dm::dm_csr_e dm_csr_addr;
+  // (dm_csr_addr and its assignment moved above, ahead of their first use)
   dm::sbcs_t sbcs;
   dm::abstractcs_t a_abstractcs;
   logic [3:0] autoexecdata_idx; // 0 == Data0 ... 11 == Data11
 
   // Get the data index, i.e. 0 for dm::Data0 up to 11 for dm::Data11
-  assign dm_csr_addr = dm::dm_csr_e'({1'b0, dmi_req_i.addr});
   // Xilinx Vivado 2020.1 does not allow subtraction of two enums; do the subtraction with logic
   // types instead.
   assign autoexecdata_idx = 4'({dm_csr_addr} - {dm::Data0});
