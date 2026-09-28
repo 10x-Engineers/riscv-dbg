@@ -188,7 +188,10 @@ module dm_csrs #(
   logic [dm::DataCount-1:0][31:0] data_d, data_q;
   //stickyunavail bits declaration for new version 1.0 #520
   logic [NrHarts-1:0] stickyunavail_d, stickyunavail_q;
-  logic [NrHarts-1:0] unavailable_effective;
+  // Aligned like the other per-hart vectors below: dmstatus indexes it with
+  // selected_hart, whose range is NrHartsAligned, not NrHarts. At NrHarts
+  // wide, hartsel=1 on a one-hart DM read past the end and returned X.
+  logic [NrHartsAligned-1:0] unavailable_effective;
   //relaxedpriv bit declaration for new version 1.0 #536
   logic relaxedpriv_d, relaxedpriv_q;
   //setkeepalive and clrkeepalive bits declaration for new version 1.0 #592
@@ -252,7 +255,7 @@ module dm_csrs #(
         stickyunavail_d[i] = 1'b0;
     end
   end
-  assign unavailable_effective = unavailable_aligned[NrHarts-1:0] | stickyunavail_q;
+  assign unavailable_effective = unavailable_aligned | NrHartsAligned'(stickyunavail_q);
   /////////////////////end of new version 1.0 #520//////////////////////
 
   assign halted_aligned      = NrHartsAligned'(halted_i);
