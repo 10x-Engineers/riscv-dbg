@@ -607,6 +607,9 @@ module dm_csrs #(
     end
 
     // static values for dcsr
+    // [28:23] are reserved (0): `sbcs_d = sbcs` above copies the whole written
+    // word, so clear them here with the other fixed fields.
+    sbcs_d.zero0                = '0;
     sbcs_d.sbversion            = 3'd1;
     sbcs_d.sbbusy               = sbbusy_i;
     sbcs_d.sbasize              = $bits(sbcs_d.sbasize)'(BusWidth);
