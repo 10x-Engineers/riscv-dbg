@@ -306,21 +306,27 @@ module dm_csrs #(
     //dmstatus.allunavail   = unavailable_aligned[selected_hart];
     // dmstatus.anyunavail   = unavailable_aligned[selected_hart];
 ///////////////new changing the logic of allunavail and anyavail/////////////////
-    dmstatus.allunavail   = unavailable_effective[selected_hart];
-    dmstatus.anyunavail   = unavailable_effective[selected_hart];
     // as soon as we are out of the legal Hart region tell the debugger
     // that there are only non-existent harts
     dmstatus.allnonexistent = logic'(32'(hartsel_o) > (NrHarts - 1));
     dmstatus.anynonexistent = logic'(32'(hartsel_o) > (NrHarts - 1));
+    // A hart is in exactly one of nonexistent, unavailable, running or halted
+    // (spec, Hart States), so a nonexistent selection reports none of the
+    // other three. It needs its own term: selected_hart keeps only
+    // HartSelLen bits of hartsel, so an out-of-range hartsel can alias an
+    // existing hart (hartsel=0xFFFFE reads hart 0 on a one-hart DM) or land
+    // in a zero padding slot, which the formulas below read as running.
+    dmstatus.allunavail   = unavailable_effective[selected_hart] & ~dmstatus.allnonexistent;
+    dmstatus.anyunavail   = unavailable_effective[selected_hart] & ~dmstatus.anynonexistent;
 
     // We are not allowed to be in multiple states at once. This is a to
     // make the running/halted and unavailable states exclusive.
     //chsange for new version 1.0 #520, unavailable_effective is used here to make sure that if a hart is unavailable it cannot be also reported as halted
-    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
-    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
+    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart] & ~dmstatus.allnonexistent;
+    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart] & ~dmstatus.anynonexistent;
     //chsange for new version 1.0 #520, unavailable_effective is used here to make sure that if a hart is unavailable it cannot be also reported as halted
-    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
-    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
+    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart] & ~dmstatus.allnonexistent;
+    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart] & ~dmstatus.anynonexistent;
 
     // abstractcs
     abstractcs = '0;
