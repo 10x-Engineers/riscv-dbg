@@ -85,6 +85,16 @@ module dm_sba #(
     endcase
   end
 
+  // The byte lane the access starts in, aligned to the access size. Narrow
+  // accesses sit in their own lane of the bus word: sbdata_i's low bytes
+  // are shifted up into that lane on writes, and the lane is shifted down
+  // into sbdata_o's low bytes on reads (as pulp-platform upstream).
+  localparam int unsigned BeIdxWidth = $clog2(BusWidth/8);
+  logic [BusWidth-1:0]   sbaccess_mask;
+  logic [BeIdxWidth-1:0] be_idx_masked;
+  assign sbaccess_mask = {BusWidth{1'b1}} << sbaccess_i;
+  assign be_idx_masked = be_idx & BeIdxWidth'(sbaccess_mask);
+
   always_comb begin : p_fsm
     req     = 1'b0;
     address = sbaddress_i;
@@ -150,7 +160,7 @@ module dm_sba #(
       req             = 1'b0;
       state_d         = dm::Idle;
       sberror_valid_o = 1'b1;
-      sberror_o       = 3'd3;
+      sberror_o       = 3'd4; // unsupported size was requested
     end
     // further error handling should go here ...
   end
@@ -166,10 +176,10 @@ module dm_sba #(
   assign master_req_o    = req;
   assign master_add_o    = address[BusWidth-1:0];
   assign master_we_o     = we;
-  assign master_wdata_o  = sbdata_i[BusWidth-1:0];
+  assign master_wdata_o  = sbdata_i[BusWidth-1:0] << (8 * be_idx_masked);
   assign master_be_o     = be[BusWidth/8-1:0];
   assign gnt             = master_gnt_i;
   assign sbdata_valid_o  = master_r_valid_i;
-  assign sbdata_o        = master_r_rdata_i[BusWidth-1:0];
+  assign sbdata_o        = master_r_rdata_i[BusWidth-1:0] >> (8 * be_idx_masked);
 
 endmodule : dm_sba
