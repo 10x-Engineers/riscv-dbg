@@ -18,6 +18,8 @@
 
 package dm;
   localparam logic [3:0] DbgVersion013 = 4'h2;
+  localparam logic [3:0] DbgVersion10 = 4'h3;///new updated version #512///////////////////////////////////  
+
   // size of program buffer in junks of 32-bit words
   localparam logic [4:0] ProgBufSize   = 5'h8;
 
@@ -26,8 +28,8 @@ package dm;
 
   // address to which a hart should jump when it was requested to halt
   localparam logic [63:0] HaltAddress = 64'h800;
-  localparam logic [63:0] ResumeAddress = HaltAddress + 8;
-  localparam logic [63:0] ExceptionAddress = HaltAddress + 16;
+  localparam logic [63:0] ResumeAddress = HaltAddress + 4;
+  localparam logic [63:0] ExceptionAddress = HaltAddress + 8;
 
   // address where data0-15 is shadowed or if shadowed in a CSR
   // address of the first CSR used for shadowing the data
@@ -61,6 +63,7 @@ package dm;
     DevTreeAddr2 = 8'h1B,
     DevTreeAddr3 = 8'h1C,
     NextDM       = 8'h1D,
+    Custom       = 8'h1F, // new version 1.0 #406 - reserved DMI space for non-standard use, not implemented, reads 0/writes ignored
     ProgBuf0     = 8'h20,
     ProgBuf1     = 8'h21,
     ProgBuf2     = 8'h22,
@@ -78,6 +81,7 @@ package dm;
     ProgBuf14    = 8'h2E,
     ProgBuf15    = 8'h2F,
     AuthData     = 8'h30,
+    DMCS2        = 8'h32, // new version 1.0 #404 and #506 - halt groups and resume groups control/status
     HaltSum2     = 8'h34,
     HaltSum3     = 8'h35,
     SBAddress3   = 8'h37,
@@ -89,7 +93,24 @@ package dm;
     SBData1      = 8'h3D,
     SBData2      = 8'h3E,
     SBData3      = 8'h3F,
-    HaltSum0     = 8'h40
+    HaltSum0     = 8'h40,
+    // new version 1.0 #406 - reserved DMI space for non-standard use, not implemented, reads 0/writes ignored
+    Custom0      = 8'h70,
+    Custom1      = 8'h71,
+    Custom2      = 8'h72,
+    Custom3      = 8'h73,
+    Custom4      = 8'h74,
+    Custom5      = 8'h75,
+    Custom6      = 8'h76,
+    Custom7      = 8'h77,
+    Custom8      = 8'h78,
+    Custom9      = 8'h79,
+    Custom10     = 8'h7A,
+    Custom11     = 8'h7B,
+    Custom12     = 8'h7C,
+    Custom13     = 8'h7D,
+    Custom14     = 8'h7E,
+    Custom15     = 8'h7F
   } dm_csr_e;
 
   // debug causes
@@ -99,7 +120,9 @@ package dm;
   localparam logic [2:0] CauseSingleStep = 3'h4;
 
   typedef struct packed {
-    logic [31:23] zero1;
+    logic [31:25] zero1;
+    logic         ndmresetpending;//new updated version 1.0 #594///////////////////////////////////
+    logic         stickyunavail;//new updated version 1.0 #520///////////////////////////////////
     logic         impebreak;
     logic [21:20] zero0;
     logic         allhavereset;
@@ -126,11 +149,12 @@ package dm;
     logic         resumereq;
     logic         hartreset;
     logic         ackhavereset;
-    logic         zero1;
+    logic         ackunavail;
     logic         hasel;
     logic [25:16] hartsello;
     logic [15:6]  hartselhi;
-    logic [5:4]   zero0;
+    logic         setkeepalive;//new bit in version 1.0 #592///////////////////////////////////
+    logic         clrkeepalive;//new bit in version 1.0 #592///////////////////////////////////
     logic         setresethaltreq;
     logic         clrresethaltreq;
     logic         ndmreset;
@@ -157,7 +181,7 @@ package dm;
     logic [28:24] progbufsize;
     logic [23:13] zero2;
     logic         busy;
-    logic         zero1;
+    logic         relaxedpriv;// new bit in version 1.0 #536
     cmderr_e      cmderr;
     logic [7:4]   zero0;
     logic [3:0]   datacount;
@@ -197,12 +221,6 @@ package dm;
     DTM_WRITE = 2'h2
   } dtm_op_e;
 
-  typedef enum logic [1:0] {
-    DTM_SUCCESS = 2'h0,
-    DTM_ERR     = 2'h2,
-    DTM_BUSY    = 2'h3
-  } dtm_op_status_e;
-
   typedef struct packed {
     logic [31:29] sbversion;
     logic [28:23] zero0;
@@ -221,6 +239,21 @@ package dm;
     logic         sbaccess8;
   } sbcs_t;
 
+  // new version 1.0 #404 and #506 - dmcs2: halt groups (#404) and resume groups (#506)
+  // are not implemented on this target. Every field is tied to the value the spec
+  // requires for the "not implemented" case, so the register always reads back 0
+  // and writes to it have no effect. See dm_csrs.sv for the read/write handling.
+  typedef struct packed {
+    logic [31:12] zero1;
+    logic         grouptype;    // #506 resume-group view; tied 0, resume groups not implemented
+    logic [10:7]  dmexttrigger; // no DM external triggers exist; tied 0
+    logic [6:2]   group;        // #404 halt-group number; tied 0, halt groups not implemented
+    logic         hgwrite;      // W1, no effect since there is nothing to apply it to
+    logic         hgselect;     // must be tied 0: no DM external triggers exist
+  } dmcs2_t;
+
+  localparam logic [1:0] DTM_SUCCESS = 2'h0;
+
   typedef struct packed {
     logic [6:0]  addr;
     dtm_op_e     op;
@@ -231,17 +264,6 @@ package dm;
     logic [31:0] data;
     logic [1:0]  resp;
   } dmi_resp_t;
-
-  typedef struct packed {
-    logic [31:18] zero1;
-    logic         dmihardreset;
-    logic         dmireset;
-    logic         zero0;
-    logic [14:12] idle;
-    logic [11:10] dmistat;
-    logic [9:4]   abits;
-    logic [3:0]   version;
-  } dtmcs_t;
 
   // privilege levels
   typedef enum logic[1:0] {
@@ -421,6 +443,12 @@ package dm;
                                         logic [4:0] dest);
     // rs1, CSRRS, rd, OpCode System
     return {csr, 5'h0, 3'h2, dest, 7'h73};
+  endfunction
+
+  function automatic logic [31:0] csrsi (csr_reg_t  csr,
+                                         logic [4:0] uimm);
+    // CSRRSI: set bits in CSR using 5-bit immediate, rd=x0
+    return {csr, uimm, 3'h6, 5'h0, 7'h73};
   endfunction
 
   function automatic logic [31:0] branch(logic [4:0]  src2,

@@ -6,9 +6,10 @@
 // # define SND_SCRATCH 1
 // These are implementation-specific addresses in the Debug Module
 #define HALTED    0x100
-#define GOING     0x108
-#define RESUMING  0x110
-#define EXCEPTION 0x118
+// updated to match dm_mem.sv v1.0 flag addresses (was 0x108/0x110/0x118)
+#define GOING     0x104
+#define RESUMING  0x108
+#define EXCEPTION 0x10C
 
 // Region of memory where each hart has 1
 // byte to read.
@@ -24,15 +25,14 @@
         // It is the same for all harts. They branch when
         // their GO or RESUME bit is set.
 
+// nops removed: entry/resume/exception now packed back-to-back to match
+// dm_pkg.sv's updated ResumeAddress (+4) / ExceptionAddress (+8) offsets
 entry:
        jal zero, _entry
-       nop
 resume:
        jal zero, _resume
-       nop
 exception:
        jal zero, _exception
-       nop
 
 
 
