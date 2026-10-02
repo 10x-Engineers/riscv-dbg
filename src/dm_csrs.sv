@@ -188,7 +188,10 @@ module dm_csrs #(
   logic [dm::DataCount-1:0][31:0] data_d, data_q;
   //stickyunavail bits declaration for new version 1.0 #520
   logic [NrHarts-1:0] stickyunavail_d, stickyunavail_q;
-  logic [NrHarts-1:0] unavailable_effective;
+  // Aligned like the other per-hart vectors below: dmstatus indexes it with
+  // selected_hart, whose range is NrHartsAligned, not NrHarts. At NrHarts
+  // wide, hartsel=1 on a one-hart DM read past the end and returned X.
+  logic [NrHartsAligned-1:0] unavailable_effective;
   //relaxedpriv bit declaration for new version 1.0 #536
   logic relaxedpriv_d, relaxedpriv_q;
   //setkeepalive and clrkeepalive bits declaration for new version 1.0 #592
@@ -221,7 +224,16 @@ module dm_csrs #(
                              halted_aligned;
   assign resumeack_aligned   = NrHartsAligned'(resumeack_i);
   assign unavailable_aligned = NrHartsAligned'(unavailable_i);
-  //new version 1.0 #520 
+
+  // Declared here rather than with the other helper variables below, because
+  // the stickyunavail block that follows reads it: Xcelium enforces IEEE 12.5
+  // declaration-before-use and rejects the later declaration outright
+  // (*E,UNDIDN), while Questa accepts it. The continuous assignment is
+  // order-independent, so this is a move, not a behavioural change.
+  dm::dm_csr_e dm_csr_addr;
+  assign dm_csr_addr = dm::dm_csr_e'({1'b0, dmi_req_i.addr});
+
+  //new version 1.0 #520
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       stickyunavail_q <= '0;
@@ -243,7 +255,7 @@ module dm_csrs #(
         stickyunavail_d[i] = 1'b0;
     end
   end
-  assign unavailable_effective = unavailable_aligned[NrHarts-1:0] | stickyunavail_q;
+  assign unavailable_effective = unavailable_aligned | NrHartsAligned'(stickyunavail_q);
   /////////////////////end of new version 1.0 #520//////////////////////
 
   assign halted_aligned      = NrHartsAligned'(halted_i);
@@ -258,13 +270,12 @@ module dm_csrs #(
   end
 
   // helper variables
-  dm::dm_csr_e dm_csr_addr;
+  // (dm_csr_addr and its assignment moved above, ahead of their first use)
   dm::sbcs_t sbcs;
   dm::abstractcs_t a_abstractcs;
   logic [3:0] autoexecdata_idx; // 0 == Data0 ... 11 == Data11
 
   // Get the data index, i.e. 0 for dm::Data0 up to 11 for dm::Data11
-  assign dm_csr_addr = dm::dm_csr_e'({1'b0, dmi_req_i.addr});
   // Xilinx Vivado 2020.1 does not allow subtraction of two enums; do the subtraction with logic
   // types instead.
   assign autoexecdata_idx = 4'({dm_csr_addr} - {dm::Data0});
@@ -295,21 +306,27 @@ module dm_csrs #(
     //dmstatus.allunavail   = unavailable_aligned[selected_hart];
     // dmstatus.anyunavail   = unavailable_aligned[selected_hart];
 ///////////////new changing the logic of allunavail and anyavail/////////////////
-    dmstatus.allunavail   = unavailable_effective[selected_hart];
-    dmstatus.anyunavail   = unavailable_effective[selected_hart];
     // as soon as we are out of the legal Hart region tell the debugger
     // that there are only non-existent harts
     dmstatus.allnonexistent = logic'(32'(hartsel_o) > (NrHarts - 1));
     dmstatus.anynonexistent = logic'(32'(hartsel_o) > (NrHarts - 1));
+    // A hart is in exactly one of nonexistent, unavailable, running or halted
+    // (spec, Hart States), so a nonexistent selection reports none of the
+    // other three. It needs its own term: selected_hart keeps only
+    // HartSelLen bits of hartsel, so an out-of-range hartsel can alias an
+    // existing hart (hartsel=0xFFFFE reads hart 0 on a one-hart DM) or land
+    // in a zero padding slot, which the formulas below read as running.
+    dmstatus.allunavail   = unavailable_effective[selected_hart] & ~dmstatus.allnonexistent;
+    dmstatus.anyunavail   = unavailable_effective[selected_hart] & ~dmstatus.anynonexistent;
 
     // We are not allowed to be in multiple states at once. This is a to
     // make the running/halted and unavailable states exclusive.
     //chsange for new version 1.0 #520, unavailable_effective is used here to make sure that if a hart is unavailable it cannot be also reported as halted
-    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
-    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
+    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart] & ~dmstatus.allnonexistent;
+    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavailable_effective[selected_hart] & ~dmstatus.anynonexistent;
     //chsange for new version 1.0 #520, unavailable_effective is used here to make sure that if a hart is unavailable it cannot be also reported as halted
-    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
-    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart];
+    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart] & ~dmstatus.allnonexistent;
+    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavailable_effective[selected_hart] & ~dmstatus.anynonexistent;
 
     // abstractcs
     abstractcs = '0;
