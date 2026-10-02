@@ -110,6 +110,12 @@ module dm_csrs #(
   if (NrHarts == 1) begin : gen_haltsum0_single
     always_comb begin : p_haltsum0
       haltsum0 = {31'b0, halted_i[0]}; // direct wire, no tree
+      // haltsum1-3 below reduce halted_reshaped0 on every configuration, so
+      // it has to be driven here too, as gen_haltsum0_multi does. Left
+      // undriven, haltsum1-3 read X on a single-hart DM.
+      halted              = '0;
+      halted[NrHarts-1:0] = halted_i;
+      halted_reshaped0    = halted;
     end
   end else begin : gen_haltsum0_multi
     logic [14:0] hartsel_idx0;              //old logic for multi-hart case in this section
