@@ -342,6 +342,8 @@ module dm_csrs #(
     sbaddr_d            = 64'(sbaddress_i);
     sbdata_d            = sbdata_q;
     relaxedpriv_d       = relaxedpriv_q; // default hold — prevents latch inference
+    keepalive_d         = keepalive_q;   // default hold — prevents latch inference
+
     dmcs2_d             = '0; // new version 1.0 #404 and #506 - halt/resume groups not implemented, always 0
 
     resp_queue_data         = 32'h0;
