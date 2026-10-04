@@ -351,6 +351,8 @@ module dm_csrs #(
     sbaddr_d            = 64'(sbaddress_i);
     sbdata_d            = sbdata_q;
     relaxedpriv_d       = relaxedpriv_q; // default hold — prevents latch inference
+    keepalive_d         = keepalive_q;   // default hold — prevents latch inference
+
     dmcs2_d             = '0; // new version 1.0 #404 and #506 - halt/resume groups not implemented, always 0
 
     resp_queue_data         = 32'h0;
@@ -588,6 +590,16 @@ module dm_csrs #(
       sbdata_d = 64'(sbdata_i);
     end
 
+    //setkeepalive and clrkeepalive are new bits in version 1.0 #592.
+    // Tested here, before the W1 fields are cleared just below: tested after
+    // the clear, both conditions were constant 0 and keepalive never changed.
+    if(dmcontrol_d.setkeepalive) begin
+      keepalive_d[selected_hart] = 1'b1;
+    end
+    if(dmcontrol_d.clrkeepalive) begin
+      keepalive_d[selected_hart] = 1'b0;
+    end
+
     // dmcontrol
     // TODO(zarubaf) we currently do not implement the hartarry mask
     dmcontrol_d.hasel           = 1'b0;
@@ -605,14 +617,6 @@ module dm_csrs #(
     end
     if (dmcontrol_q.resumereq && resumeack_i) begin
       dmcontrol_d.resumereq = 1'b0;
-    end
-
-    //setkeepalive and clrkeepalive are new bits in version 1.0 #592.
-    if(dmcontrol_d.setkeepalive) begin
-      keepalive_d[selected_hart] = 1'b1;
-    end
-    if(dmcontrol_d.clrkeepalive) begin
-      keepalive_d[selected_hart] = 1'b0;
     end
 
     // static values for dcsr
