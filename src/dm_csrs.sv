@@ -366,7 +366,9 @@ module dm_csrs #(
           resp_queue_data = data_q[dmi_req_i.addr[$clog2(dm::DataCount)-1:0]];
           if (!cmdbusy_i) begin
             // check whether we need to re-execute the command (just give a cmd_valid)
-            cmd_valid_d = abstractauto_q.autoexecdata[autoexecdata_idx];
+            // no command starts while cmderr is non-zero
+            if (cmderr_q == dm::CmdErrNone)
+              cmd_valid_d = abstractauto_q.autoexecdata[autoexecdata_idx];
           // An abstract command was executing while one of the data registers was read
           end else if (cmderr_q == dm::CmdErrNone) begin
             cmderr_d = dm::CmdErrBusy;
@@ -385,7 +387,9 @@ module dm_csrs #(
           if (!cmdbusy_i) begin
             // check whether we need to re-execute the command (just give a cmd_valid)
             // range of autoexecprogbuf is 31:16
-            cmd_valid_d = abstractauto_q.autoexecprogbuf[{1'b1, dmi_req_i.addr[3:0]}];
+            // no command starts while cmderr is non-zero
+            if (cmderr_q == dm::CmdErrNone)
+              cmd_valid_d = abstractauto_q.autoexecprogbuf[{1'b1, dmi_req_i.addr[3:0]}];
 
           // An abstract command was executing while one of the progbuf registers was read
           end else if (cmderr_q == dm::CmdErrNone) begin
@@ -438,7 +442,9 @@ module dm_csrs #(
             if (!cmdbusy_i) begin
               data_d[dmi_req_i.addr[$clog2(dm::DataCount)-1:0]] = dmi_req_i.data;
               // check whether we need to re-execute the command (just give a cmd_valid)
-              cmd_valid_d = abstractauto_q.autoexecdata[autoexecdata_idx];
+              // no command starts while cmderr is non-zero
+              if (cmderr_q == dm::CmdErrNone)
+                cmd_valid_d = abstractauto_q.autoexecdata[autoexecdata_idx];
             //An abstract command was executing while one of the data registers was written
             end else if (cmderr_q == dm::CmdErrNone) begin
               cmderr_d = dm::CmdErrBusy;
@@ -474,8 +480,8 @@ module dm_csrs #(
           end
         end
         dm::Command: begin
-          // writes are ignored if a command is already busy
-          if (!cmdbusy_i) begin
+          // writes are ignored if a command is already busy or cmderr is non-zero
+          if (!cmdbusy_i && cmderr_q == dm::CmdErrNone) begin
             cmd_valid_d = 1'b1;
             command_d = dm::command_t'(dmi_req_i.data);
           // if there was an attempted to write during a busy execution
@@ -502,7 +508,9 @@ module dm_csrs #(
             // this should probably throw an error if executed during another command
             // was busy
             // range of autoexecprogbuf is 31:16
-            cmd_valid_d = abstractauto_q.autoexecprogbuf[{1'b1, dmi_req_i.addr[3:0]}];
+            // no command starts while cmderr is non-zero
+            if (cmderr_q == dm::CmdErrNone)
+              cmd_valid_d = abstractauto_q.autoexecprogbuf[{1'b1, dmi_req_i.addr[3:0]}];
           //An abstract command was executing while one of the progbuf registers was written
           end else if (cmderr_q == dm::CmdErrNone) begin
             cmderr_d = dm::CmdErrBusy;
