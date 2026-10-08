@@ -105,27 +105,20 @@ module dm_csrs #(
   logic [((NrHarts-1)/2**15+1)*32-1:0] halted_flat2;
   logic [31:0] halted_flat3;
 
-  ////new Incompatible Changes from 0.13 to 1.0//////////
- // haltsum0: single-hart shortcut (RISC-V Debug Spec 1.0 #505)
-  if (NrHarts == 1) begin : gen_haltsum0_single
-    always_comb begin : p_haltsum0
-      haltsum0 = {31'b0, halted_i[0]}; // direct wire, no tree
-    end
-  end else begin : gen_haltsum0_multi
-    logic [14:0] hartsel_idx0;              //old logic for multi-hart case in this section
-    always_comb begin : p_haltsum0
-      halted              = '0;
-      haltsum0            = '0;
-      hartsel_idx0        = hartsel_o[19:5];
-      halted[NrHarts-1:0] = halted_i;
-      halted_reshaped0    = halted;
-      if (hartsel_idx0 < 15'((NrHarts-1)/2**5+1)) begin
-        haltsum0 = halted_reshaped0[hartsel_idx0];
-      end
+  // haltsum0
+  // Debug Spec 1.0 (#505) lets a single-hart DM omit haltsum0; this block
+  // implements it, which stays legal and is correct for any NrHarts.
+  logic [14:0] hartsel_idx0;
+  always_comb begin : p_haltsum0
+    halted              = '0;
+    haltsum0            = '0;
+    hartsel_idx0        = hartsel_o[19:5];
+    halted[NrHarts-1:0] = halted_i;
+    halted_reshaped0    = halted;
+    if (hartsel_idx0 < 15'((NrHarts-1)/2**5+1)) begin
+      haltsum0 = halted_reshaped0[hartsel_idx0];
     end
   end
-  ///////////////////////////end of incompatible change #512////////////////////////
-
   // haltsum1
   logic [9:0] hartsel_idx1;
   always_comb begin : p_reduction1
