@@ -26,7 +26,6 @@ module dm_mem #(
   input  logic                             rst_ni,      // debug module reset
 
   output logic [NrHarts-1:0]               debug_req_o,
-  input  logic                             ndmreset_i,
   input  logic [19:0]                      hartsel_i,
   // from Ctrl and Status register
   input  logic [NrHarts-1:0]               haltreq_i,
@@ -44,6 +43,7 @@ module dm_mem #(
   output logic                             data_valid_o, // data out is valid
   // abstract command interface
   input  logic                             cmd_valid_i,
+  input  logic                             relaxedpriv_i, // new bit in version 1.0 #536
   input  dm::command_t                     cmd_i,
   output logic                             cmderror_valid_o,
   output dm::cmderr_e                      cmderror_o,
@@ -78,9 +78,9 @@ module dm_mem #(
   localparam logic [DbgAddressBits-1:0] FlagsEndAddr  = 'h7FF;
 
   localparam logic [DbgAddressBits-1:0] HaltedAddr    = 'h100;
-  localparam logic [DbgAddressBits-1:0] GoingAddr     = 'h108;
-  localparam logic [DbgAddressBits-1:0] ResumingAddr  = 'h110;
-  localparam logic [DbgAddressBits-1:0] ExceptionAddr = 'h118;
+  localparam logic [DbgAddressBits-1:0] GoingAddr     = 'h104;
+  localparam logic [DbgAddressBits-1:0] ResumingAddr  = 'h108;
+  localparam logic [DbgAddressBits-1:0] ExceptionAddr = 'h10C;
 
   logic [dm::ProgBufSize/2-1:0][63:0]   progbuf;
   logic [7:0][63:0]   abstract_cmd;
@@ -202,13 +202,6 @@ module dm_mem #(
       cmderror_valid_o = 1'b1;
       cmderror_o = dm::CmdErrorException;
     end
-
-    if (ndmreset_i) begin
-      // Clear state of hart and its control signals when it is being reset.
-      state_d = Idle;
-      go      = 1'b0;
-      resume  = 1'b0;
-    end
   end
 
   // word mux for 32bit and 64bit buses
@@ -222,13 +215,14 @@ module dm_mem #(
   end
 
   // read/write logic
-  logic [dm::DataCount-1:0][31:0] data_bits;
+  logic [63:0] data_bits;
   logic [7:0][7:0] rdata;
-  always_comb (* xprop_off *) begin : p_rw_logic
+  always_comb begin : p_rw_logic
 
     halted_d_aligned   = NrHartsAligned'(halted_q);
     resuming_d_aligned = NrHartsAligned'(resuming_q);
     rdata_d        = rdata_q;
+    // convert the data in bits representation
     data_bits      = data_i;
     rdata          = '0;
 
@@ -265,19 +259,9 @@ module dm_mem #(
           // core can write data registers
           [DataBaseAddr:DataEndAddr]: begin
             data_valid_o = 1'b1;
-            for (int dc = 0; dc < dm::DataCount; dc++) begin
-              if ((addr_i[DbgAddressBits-1:2] - DataBaseAddr[DbgAddressBits-1:2]) == dc) begin
-                for (int i = 0; i < $bits(be_i); i++) begin
-                  if (be_i[i]) begin
-                    if (i>3) begin // for upper 32bit data write (only used for BusWidth ==  64)
-                      if ((dc+1) < dm::DataCount) begin // ensure we write to an implemented data register
-                        data_bits[dc+1][(i-4)*8+:8] = wdata_i[i*8+:8];
-                      end
-                    end else begin // for lower 32bit data write
-                      data_bits[dc][i*8+:8] = wdata_i[i*8+:8];
-                    end
-                  end
-                end
+            for (int i = 0; i < $bits(be_i); i++) begin
+              if (be_i[i]) begin
+                data_bits[i*8+:8] = wdata_i[i*8+:8];
               end
             end
           end
@@ -310,8 +294,10 @@ module dm_mem #(
 
           [DataBaseAddr:DataEndAddr]: begin
             rdata_d = {
-                      data_i[$clog2(dm::DataCount)'(((addr_i[DbgAddressBits-1:3] - DataBaseAddr[DbgAddressBits-1:3]) << 1) + 1'b1)],
-                      data_i[$clog2(dm::DataCount)'(((addr_i[DbgAddressBits-1:3] - DataBaseAddr[DbgAddressBits-1:3]) << 1))]
+                      data_i[$clog2(dm::ProgBufSize)'(addr_i[DbgAddressBits-1:3] -
+                          DataBaseAddr[DbgAddressBits-1:3] + 1'b1)],
+                      data_i[$clog2(dm::ProgBufSize)'(addr_i[DbgAddressBits-1:3] -
+                          DataBaseAddr[DbgAddressBits-1:3])]
                       };
           end
 
@@ -340,12 +326,6 @@ module dm_mem #(
       end
     end
 
-    if (ndmreset_i) begin
-      // When harts are reset, they are neither halted nor resuming.
-      halted_d_aligned   = '0;
-      resuming_d_aligned = '0;
-    end
-
     data_o = data_bits;
   end
 
@@ -359,7 +339,12 @@ module dm_mem #(
     abstract_cmd[0][63:32] = HasSndScratch ? dm::auipc(5'd10, '0) : dm::nop();
     // clr lowest 12b -> DM base offset
     abstract_cmd[1][31:0]  = HasSndScratch ? dm::srli(5'd10, 5'd10, 6'd12) : dm::nop();
-    abstract_cmd[1][63:32] = HasSndScratch ? dm::slli(5'd10, 5'd10, 6'd12) : dm::nop();
+    // relaxedpriv=0: force dcsr.prv=M-mode before actual op (spec 1.0 #536)
+    // relaxedpriv=1: leave dcsr.prv unchanged (use hart's privilege at halt)
+    // only applied when HasSndScratch=0; slli occupies this slot otherwise
+    abstract_cmd[1][63:32] = HasSndScratch ? dm::slli(5'd10, 5'd10, 6'd12)
+                                           : (relaxedpriv_i ? dm::nop()
+                                                            : dm::csrsi(dm::CSR_DCSR, 5'd3));
     abstract_cmd[2][31:0]  = dm::nop();
     abstract_cmd[2][63:32] = dm::nop();
     abstract_cmd[3][31:0]  = dm::nop();
@@ -497,7 +482,6 @@ module dm_mem #(
   if (HasSndScratch) begin : gen_rom_snd_scratch
     debug_rom i_debug_rom (
       .clk_i,
-      .rst_ni,
       .req_i,
       .addr_i  ( rom_addr  ),
       .rdata_o ( rom_rdata )
@@ -508,7 +492,6 @@ module dm_mem #(
     // be saved.
     debug_rom_one_scratch i_debug_rom (
       .clk_i,
-      .rst_ni,
       .req_i,
       .addr_i  ( rom_addr  ),
       .rdata_o ( rom_rdata )
