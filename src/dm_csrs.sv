@@ -380,7 +380,8 @@ module dm_csrs #(
         dm::Command:      resp_queue_inp.data = '0;
         dm::NextDM:       resp_queue_inp.data = next_dm_addr_i;
         [(dm::ProgBuf0):ProgBufEnd]: begin
-          resp_queue_inp.data = progbuf_q[dmi_req_i.addr[$clog2(dm::ProgBufSize)-1:0]];
+          // the program buffer is write-only over DMI, reads return 0 (Debug Spec 1.0 #731)
+          resp_queue_inp.data = 32'h0;
           if (!cmdbusy_i) begin
             // check whether we need to re-execute the command (just give a cmd_valid)
             // range of autoexecprogbuf is 31:16
