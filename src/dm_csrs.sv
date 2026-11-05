@@ -262,7 +262,7 @@ module dm_csrs #(
     // --------------------
     // dmstatus
     dmstatus    = '0;
-    dmstatus.version = dm::DbgVersion013;
+    dmstatus.version = dm::DbgVersion10;
     // no authentication implemented
     dmstatus.authenticated = 1'b1;
     // we do not support halt-on-reset sequence
