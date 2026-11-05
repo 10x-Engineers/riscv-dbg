@@ -12,10 +12,10 @@ VERILATOR_FILE_LIST := $(ROOT)/build/verilator/sources.flist
 NUM_JOBS ?= 2
 OPENOCD_PREFIX ?= $(ROOT)/.cache/openocd
 
-.PHONY: all compliance dm-mem firmware full-model jtag-dmi multihart-resume openocd \
+.PHONY: all compliance dm-mem firmware full-model jtag-dmi multihart-resume openocd spec-1p0 \
 	verilator-sources
 
-all: dm-mem jtag-dmi multihart-resume compliance
+all: dm-mem jtag-dmi multihart-resume spec-1p0 compliance
 
 verilator-sources:
 	cd $(ROOT) && bender checkout
@@ -26,6 +26,7 @@ verilator-sources:
 		-t riscv-dbg:test \
 		-t riscv-dbg:dm_mem_test \
 		-t riscv-dbg:multihart_resume_test \
+		-t riscv-dbg:spec_1p0_test \
 		-t tech_cells_generic:tech_cells_generic_exclude_deprecated \
 		> $(VERILATOR_FILE_LIST)
 
@@ -51,6 +52,10 @@ dm-mem: verilator-sources
 multihart-resume: verilator-sources
 	MULTIHART_BUILD_DIR=$(ROOT)/build/multihart-verilator \
 		$(ROOT)/ci/run-multihart-verilator.sh
+
+spec-1p0: verilator-sources
+	SPEC_1P0_BUILD_DIR=$(ROOT)/build/spec-1p0-verilator \
+		$(ROOT)/ci/run-spec-1p0-verilator.sh
 
 compliance: full-model firmware openocd
 	cd $(TB) && \

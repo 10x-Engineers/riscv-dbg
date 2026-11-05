@@ -55,3 +55,7 @@ sources:
   - target: multihart_resume_test
     files:
     - tb/dm_top/tb_dm_top_multihart_resume.sv
+
+  - target: spec_1p0_test
+    files:
+    - tb/dm_top/tb_dm_top_spec_1p0.sv
