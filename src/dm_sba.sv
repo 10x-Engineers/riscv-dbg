@@ -137,8 +137,8 @@ module dm_sba #(
       dm::WaitRead: begin
         if (sbdata_valid_o) begin
           state_d = dm::Idle;
-          // auto-increment address
-          addr_incr_en = sbautoincrement_i;
+          // auto-increment address, only if the access succeeded (Debug Spec 1.0 #507)
+          addr_incr_en = sbautoincrement_i && !master_r_err_i && !master_r_other_err_i;
           // check whether an "other" error has been encountered.
           if (master_r_other_err_i) begin
             sberror_valid_o = 1'b1;
@@ -154,8 +154,8 @@ module dm_sba #(
       dm::WaitWrite: begin
         if (sbdata_valid_o) begin
           state_d = dm::Idle;
-          // auto-increment address
-          addr_incr_en = sbautoincrement_i;
+          // auto-increment address, only if the access succeeded (Debug Spec 1.0 #507)
+          addr_incr_en = sbautoincrement_i && !master_r_err_i && !master_r_other_err_i;
           // check whether an "other" error has been encountered.
           if (master_r_other_err_i) begin
             sberror_valid_o = 1'b1;
