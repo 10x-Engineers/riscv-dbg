@@ -213,6 +213,12 @@ module dm_csrs #(
 
   assign havereset_q_aligned = NrHartsAligned'(havereset_q);
 
+  // Sticky unavail (Debug Spec 1.0 #520): a hart that was unavailable keeps
+  // reading as unavailable until the debugger acknowledges it with ackunavail.
+  // Padding slots above NrHarts stay 0, as in unavailable_aligned.
+  logic [NrHartsAligned-1:0] unavail_sticky_d, unavail_sticky_q, unavail_reported;
+  assign unavail_reported = unavailable_aligned | unavail_sticky_q;
+
   dm::hartinfo_t [NrHartsAligned-1:0] hartinfo_aligned;
   always_comb begin : p_hartinfo_align
     hartinfo_aligned = '0;
@@ -278,8 +284,9 @@ module dm_csrs #(
     dmstatus.allresumeack = resumeack_aligned[selected_hart];
     dmstatus.anyresumeack = resumeack_aligned[selected_hart];
 
-    dmstatus.allunavail   = unavailable_aligned[selected_hart];
-    dmstatus.anyunavail   = unavailable_aligned[selected_hart];
+    dmstatus.stickyunavail = 1'b1;
+    dmstatus.allunavail   = unavail_reported[selected_hart];
+    dmstatus.anyunavail   = unavail_reported[selected_hart];
 
     // as soon as we are out of the legal Hart region tell the debugger
     // that there are only non-existent harts
@@ -288,11 +295,11 @@ module dm_csrs #(
 
     // We are not allowed to be in multiple states at once. This is a to
     // make the running/halted and unavailable states exclusive.
-    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavailable_aligned[selected_hart];
-    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavailable_aligned[selected_hart];
+    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavail_reported[selected_hart];
+    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavail_reported[selected_hart];
 
-    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavailable_aligned[selected_hart];
-    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavailable_aligned[selected_hart];
+    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavail_reported[selected_hart];
+    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavail_reported[selected_hart];
 
     // abstractcs
     abstractcs = '0;
@@ -313,6 +320,7 @@ module dm_csrs #(
     dmcontrol_read.resumereq = 1'b0;
     resume_pending_d     = resume_pending_q;
     ndmreset_inflight_d  = ndmreset_inflight_q;
+    unavail_sticky_d     = unavail_sticky_q | unavailable_aligned;
     // Acknowledgements retire only the corresponding pending actions
     resume_pending_d    &= ~resumeack_i;
     cmderr_d            = cmderr_q;
@@ -591,8 +599,9 @@ module dm_csrs #(
     dmcontrol_d.hartreset       = 1'b0;
     dmcontrol_d.setresethaltreq = 1'b0;
     dmcontrol_d.clrresethaltreq = 1'b0;
-    dmcontrol_d.zero1           = '0;
     dmcontrol_d.zero0           = '0;
+    // W1 field, never stored; see the ackunavail handling below
+    dmcontrol_d.ackunavail      = 1'b0;
     // Non-writeable, clear only
     dmcontrol_d.ackhavereset    = 1'b0;
     // resumereq is W1/read-zero and is represented by the per-hart pending vector
@@ -612,6 +621,13 @@ module dm_csrs #(
     if (dmcontrol_write_accepted && !dmcontrol_write_dmactive) begin
       resume_pending_d = '0;
     end
+    // ackunavail clears the sticky unavail of the hart selected by the written
+    // hartsel, but only if that hart is currently available.
+    if (dmcontrol_write_accepted && dmi_req_i.data[27] && dmcontrol_write_hart_valid &&
+        !unavailable_aligned[dmcontrol_write_hart]) begin
+      unavail_sticky_d[dmcontrol_write_hart] = 1'b0;
+    end
+
     // A new ndmreset request stays pending until the platform acknowledges it;
     // a request wins over a same-cycle acknowledgement of an earlier one.
     if (dmcontrol_q.dmactive && dmcontrol_d.ndmreset && !dmcontrol_q.ndmreset) begin
@@ -690,6 +706,7 @@ module dm_csrs #(
       havereset_q    <= '1;
       resume_pending_q <= '0;
       ndmreset_inflight_q <= 1'b0;
+      unavail_sticky_q <= '0;
     end else begin
       havereset_q    <= SelectableHarts & havereset_d;
       // not cleared by dmactive: the platform reset continues regardless
@@ -700,7 +717,7 @@ module dm_csrs #(
         dmcontrol_q.resumereq        <= '0;
         dmcontrol_q.hartreset        <= '0;
         dmcontrol_q.ackhavereset     <= '0;
-        dmcontrol_q.zero1            <= '0;
+        dmcontrol_q.ackunavail       <= '0;
         dmcontrol_q.hasel            <= '0;
         dmcontrol_q.hartsello        <= '0;
         dmcontrol_q.hartselhi        <= '0;
@@ -709,6 +726,7 @@ module dm_csrs #(
         dmcontrol_q.clrresethaltreq  <= '0;
         dmcontrol_q.ndmreset         <= '0;
         resume_pending_q             <= '0;
+        unavail_sticky_q             <= '0;
         // this is the only write-able bit during reset
         dmcontrol_q.dmactive         <= dmcontrol_d.dmactive;
         cmderr_q                     <= dm::CmdErrNone;
@@ -723,6 +741,7 @@ module dm_csrs #(
       end else begin
         dmcontrol_q                  <= dmcontrol_d;
         resume_pending_q             <= SelectableHarts & resume_pending_d;
+        unavail_sticky_q             <= unavail_sticky_d;
         cmderr_q                     <= cmderr_d;
         command_q                    <= command_d;
         cmd_valid_q                  <= cmd_valid_d;

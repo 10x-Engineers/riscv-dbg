@@ -148,7 +148,7 @@ package dm;
     logic         resumereq;
     logic         hartreset;
     logic         ackhavereset;
-    logic         zero1;
+    logic         ackunavail;
     logic         hasel;
     logic [25:16] hartsello;
     logic [15:6]  hartselhi;
