@@ -179,6 +179,8 @@ module dm_csrs #(
 
   logic [NrHarts-1:0] havereset_d, havereset_q;
   logic [NrHarts-1:0] resume_pending_d, resume_pending_q;
+  // An ndmreset was requested and the platform has not yet acknowledged it
+  logic               ndmreset_inflight_d, ndmreset_inflight_q;
   // program buffer
   logic [dm::ProgBufSize-1:0][31:0] progbuf_d, progbuf_q;
   logic [dm::DataCount-1:0][31:0] data_d, data_d_dmi, data_q;
@@ -270,6 +272,8 @@ module dm_csrs #(
     // TODO(zarubaf) things need to change here if we implement the array mask
     dmstatus.allhavereset = havereset_q_aligned[selected_hart];
     dmstatus.anyhavereset = havereset_q_aligned[selected_hart];
+    // ndmreset is high, or it was lowered and the platform reset has not completed yet
+    dmstatus.ndmresetpending = dmcontrol_q.ndmreset | ndmreset_inflight_q;
 
     dmstatus.allresumeack = resumeack_aligned[selected_hart];
     dmstatus.anyresumeack = resumeack_aligned[selected_hart];
@@ -308,6 +312,7 @@ module dm_csrs #(
     dmcontrol_read.haltreq   = 1'b0;
     dmcontrol_read.resumereq = 1'b0;
     resume_pending_d     = resume_pending_q;
+    ndmreset_inflight_d  = ndmreset_inflight_q;
     // Acknowledgements retire only the corresponding pending actions
     resume_pending_d    &= ~resumeack_i;
     cmderr_d            = cmderr_q;
@@ -565,6 +570,7 @@ module dm_csrs #(
     // set the havereset flag when the ndmreset completed
     if (ndmreset_ack_i) begin
       havereset_d = '1;
+      ndmreset_inflight_d = 1'b0;
     end
     // -------------
     // System Bus
@@ -605,6 +611,11 @@ module dm_csrs #(
     // Deactivating the debug module clears all pending actions
     if (dmcontrol_write_accepted && !dmcontrol_write_dmactive) begin
       resume_pending_d = '0;
+    end
+    // A new ndmreset request stays pending until the platform acknowledges it;
+    // a request wins over a same-cycle acknowledgement of an earlier one.
+    if (dmcontrol_q.dmactive && dmcontrol_d.ndmreset && !dmcontrol_q.ndmreset) begin
+      ndmreset_inflight_d = 1'b1;
     end
     // WARL behavior of hartsel, depending on NrHarts.
     // If NrHarts = 1 this is just masked to all-zeros.
@@ -678,8 +689,11 @@ module dm_csrs #(
       sbdata_q       <= '0;
       havereset_q    <= '1;
       resume_pending_q <= '0;
+      ndmreset_inflight_q <= 1'b0;
     end else begin
       havereset_q    <= SelectableHarts & havereset_d;
+      // not cleared by dmactive: the platform reset continues regardless
+      ndmreset_inflight_q <= ndmreset_inflight_d;
       // synchronous re-set of debug module, active-low, except for dmactive
       if (!dmcontrol_q.dmactive) begin
         dmcontrol_q.haltreq          <= '0;
