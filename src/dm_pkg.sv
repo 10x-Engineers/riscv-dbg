@@ -62,6 +62,7 @@ package dm;
     DevTreeAddr2 = 8'h1B,
     DevTreeAddr3 = 8'h1C,
     NextDM       = 8'h1D,
+    Custom       = 8'h1F, // reserved for non-standard use (Debug Spec 1.0 #406), reads 0
     ProgBuf0     = 8'h20,
     ProgBuf1     = 8'h21,
     ProgBuf2     = 8'h22,
@@ -79,6 +80,7 @@ package dm;
     ProgBuf14    = 8'h2E,
     ProgBuf15    = 8'h2F,
     AuthData     = 8'h30,
+    DMCS2        = 8'h32,
     HaltSum2     = 8'h34,
     HaltSum3     = 8'h35,
     SBAddress3   = 8'h37,
@@ -90,7 +92,24 @@ package dm;
     SBData1      = 8'h3D,
     SBData2      = 8'h3E,
     SBData3      = 8'h3F,
-    HaltSum0     = 8'h40
+    HaltSum0     = 8'h40,
+    // reserved for non-standard use (Debug Spec 1.0 #406), read 0
+    Custom0      = 8'h70,
+    Custom1      = 8'h71,
+    Custom2      = 8'h72,
+    Custom3      = 8'h73,
+    Custom4      = 8'h74,
+    Custom5      = 8'h75,
+    Custom6      = 8'h76,
+    Custom7      = 8'h77,
+    Custom8      = 8'h78,
+    Custom9      = 8'h79,
+    Custom10     = 8'h7A,
+    Custom11     = 8'h7B,
+    Custom12     = 8'h7C,
+    Custom13     = 8'h7D,
+    Custom14     = 8'h7E,
+    Custom15     = 8'h7F
   } dm_csr_e;
 
   // debug causes
@@ -221,6 +240,18 @@ package dm;
     logic         sbaccess16;
     logic         sbaccess8;
   } sbcs_t;
+
+  // Halt groups (#404), resume groups (#506) and DM external triggers are not
+  // implemented. All harts are in group 0, so dmcs2 reads as zero and writes
+  // have no effect (Debug Spec 1.0 Section 3.6).
+  typedef struct packed {
+    logic [31:12] zero0;
+    logic         grouptype;
+    logic [10:7]  dmexttrigger;
+    logic [6:2]   group;
+    logic         hgwrite;
+    logic         hgselect;
+  } dmcs2_t;
 
   typedef struct packed {
     logic [6:0]  addr;

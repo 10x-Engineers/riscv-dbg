@@ -372,6 +372,8 @@ module dm_csrs #(
         dm::HaltSum1: resp_queue_inp.data = haltsum1;
         dm::HaltSum2: resp_queue_inp.data = haltsum2;
         dm::HaltSum3: resp_queue_inp.data = haltsum3;
+        // no halt/resume groups or DM external triggers: every field reads 0
+        dm::DMCS2:    resp_queue_inp.data = dm::dmcs2_t'('0);
         dm::SBCS: begin
           resp_queue_inp.data = sbcs_q;
         end
@@ -469,6 +471,7 @@ module dm_csrs #(
           end
         end
         dm::NextDM:; // nextdm is R/O
+        dm::DMCS2:;  // groups are not implemented, writes have no effect
         dm::AbstractAuto: begin
           // this field can only be written legally when there is no command executing
           if (!cmdbusy_i) begin
