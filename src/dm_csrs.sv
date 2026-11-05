@@ -38,6 +38,7 @@ module dm_csrs #(
   input  logic                              ndmreset_ack_i,  // non-debug module reset ack pulse
   output logic                              dmactive_o,      // 1 -> debug-module is active,
                                                              // 0 -> synchronous re-set
+  output logic [NrHarts-1:0]                keepalive_o,     // debugger asks to keep hart available
   // hart status
   input  dm::hartinfo_t [NrHarts-1:0]       hartinfo_i,      // static hartinfo
   input  logic [NrHarts-1:0]                halted_i,        // hart is halted
@@ -219,6 +220,10 @@ module dm_csrs #(
   logic [NrHartsAligned-1:0] unavail_sticky_d, unavail_sticky_q, unavail_reported;
   assign unavail_reported = unavailable_aligned | unavail_sticky_q;
 
+  // keepalive (Debug Spec 1.0 #592): per-hart hint to keep the hart available,
+  // e.g. out of a low-power state, written through setkeepalive/clrkeepalive.
+  logic [NrHartsAligned-1:0] keepalive_d, keepalive_q;
+
   dm::hartinfo_t [NrHartsAligned-1:0] hartinfo_aligned;
   always_comb begin : p_hartinfo_align
     hartinfo_aligned = '0;
@@ -326,6 +331,7 @@ module dm_csrs #(
     resume_pending_d     = resume_pending_q;
     ndmreset_inflight_d  = ndmreset_inflight_q;
     unavail_sticky_d     = unavail_sticky_q | unavailable_aligned;
+    keepalive_d          = keepalive_q;
     // Acknowledgements retire only the corresponding pending actions
     resume_pending_d    &= ~resumeack_i;
     cmderr_d            = cmderr_q;
@@ -604,9 +610,10 @@ module dm_csrs #(
     dmcontrol_d.hartreset       = 1'b0;
     dmcontrol_d.setresethaltreq = 1'b0;
     dmcontrol_d.clrresethaltreq = 1'b0;
-    dmcontrol_d.zero0           = '0;
-    // W1 field, never stored; see the ackunavail handling below
+    // W1 fields, never stored; see the ackunavail and keepalive handling below
     dmcontrol_d.ackunavail      = 1'b0;
+    dmcontrol_d.setkeepalive    = 1'b0;
+    dmcontrol_d.clrkeepalive    = 1'b0;
     // Non-writeable, clear only
     dmcontrol_d.ackhavereset    = 1'b0;
     // resumereq is W1/read-zero and is represented by the per-hart pending vector
@@ -631,6 +638,15 @@ module dm_csrs #(
     if (dmcontrol_write_accepted && dmi_req_i.data[27] && dmcontrol_write_hart_valid &&
         !unavailable_aligned[dmcontrol_write_hart]) begin
       unavail_sticky_d[dmcontrol_write_hart] = 1'b0;
+    end
+    // setkeepalive/clrkeepalive apply to the hart selected by the written
+    // hartsel; clrkeepalive wins when both are set.
+    if (dmcontrol_write_accepted && dmcontrol_write_dmactive && dmcontrol_write_hart_valid) begin
+      if (dmi_req_i.data[4]) begin
+        keepalive_d[dmcontrol_write_hart] = 1'b0;
+      end else if (dmi_req_i.data[5]) begin
+        keepalive_d[dmcontrol_write_hart] = 1'b1;
+      end
     end
 
     // A new ndmreset request stays pending until the platform acknowledges it;
@@ -666,6 +682,7 @@ module dm_csrs #(
   end
 
   assign dmactive_o  = dmcontrol_q.dmactive;
+  assign keepalive_o = keepalive_q[NrHarts-1:0];
   assign cmd_o       = command_q;
   assign cmd_valid_o = cmd_valid_q;
   assign progbuf_o   = progbuf_q;
@@ -712,6 +729,7 @@ module dm_csrs #(
       resume_pending_q <= '0;
       ndmreset_inflight_q <= 1'b0;
       unavail_sticky_q <= '0;
+      keepalive_q      <= '0;
     end else begin
       havereset_q    <= SelectableHarts & havereset_d;
       // not cleared by dmactive: the platform reset continues regardless
@@ -726,12 +744,14 @@ module dm_csrs #(
         dmcontrol_q.hasel            <= '0;
         dmcontrol_q.hartsello        <= '0;
         dmcontrol_q.hartselhi        <= '0;
-        dmcontrol_q.zero0            <= '0;
+        dmcontrol_q.setkeepalive     <= '0;
+        dmcontrol_q.clrkeepalive     <= '0;
         dmcontrol_q.setresethaltreq  <= '0;
         dmcontrol_q.clrresethaltreq  <= '0;
         dmcontrol_q.ndmreset         <= '0;
         resume_pending_q             <= '0;
         unavail_sticky_q             <= '0;
+        keepalive_q                  <= '0;
         // this is the only write-able bit during reset
         dmcontrol_q.dmactive         <= dmcontrol_d.dmactive;
         cmderr_q                     <= dm::CmdErrNone;
@@ -747,6 +767,7 @@ module dm_csrs #(
         dmcontrol_q                  <= dmcontrol_d;
         resume_pending_q             <= SelectableHarts & resume_pending_d;
         unavail_sticky_q             <= unavail_sticky_d;
+        keepalive_q                  <= keepalive_d;
         cmderr_q                     <= cmderr_d;
         command_q                    <= command_d;
         cmd_valid_q                  <= cmd_valid_d;

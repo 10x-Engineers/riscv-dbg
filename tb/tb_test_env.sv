@@ -251,6 +251,7 @@ module tb_test_env #(
        .ndmreset_o        ( ndmreset          ),
        .dmactive_o        (                   ), // active debug session TODO
        .debug_req_o       ( dm_debug_req      ),
+       .keepalive_o       (                   ),
        .unavailable_i     ( ~SelectableHarts ),
        .hartinfo_i        ( HartInfo          ),
 

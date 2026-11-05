@@ -43,6 +43,8 @@ module dm_top #(
   input  logic                  ndmreset_ack_i, // non-debug module reset acknowledgement pulse
   output logic                  dmactive_o,  // debug module is active
   output logic [NrHarts-1:0]    debug_req_o, // async debug request
+  // debugger asks to keep the hart available (e.g.: out of low power), may be left open
+  output logic [NrHarts-1:0]    keepalive_o,
   // communicate whether the hart is unavailable (e.g.: power down)
   input  logic [NrHarts-1:0]    unavailable_i,
   input  dm::hartinfo_t [NrHarts-1:0] hartinfo_i,
@@ -135,6 +137,7 @@ module dm_top #(
     .ndmreset_o              ( ndmreset              ),
     .ndmreset_ack_i          ( ndmreset_ack_i        ),
     .dmactive_o,
+    .keepalive_o,
     .hartsel_o               ( hartsel               ),
     .hartinfo_i,
     .halted_i                ( halted                ),

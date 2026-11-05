@@ -59,6 +59,7 @@ module tb_dm_top_multihart_resume #(
     .ndmreset_ack_i         ( 1'b0            ),
     .dmactive_o             ( dmactive        ),
     .debug_req_o            (                 ),
+    .keepalive_o            (                 ),
     .unavailable_i          ( unavailable_i   ),
     .hartinfo_i             ( '0              ),
     .slave_req_i            ( slave_req       ),

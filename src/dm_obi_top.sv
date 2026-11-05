@@ -139,6 +139,7 @@ module dm_obi_top #(
     .ndmreset_ack_i          ( ndmreset_o            ), // This is currently not exposed yet.
     .dmactive_o              ( dmactive_o            ),
     .debug_req_o             ( debug_req_o           ),
+    .keepalive_o             (                       ), // Not exposed at the top yet.
     .unavailable_i           ( unavailable_i         ),
     .hartinfo_i              ( hartinfo_i            ),
 
