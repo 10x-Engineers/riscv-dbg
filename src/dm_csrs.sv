@@ -317,6 +317,9 @@ module dm_csrs #(
     abstractcs.progbufsize = dm::ProgBufSize;
     abstractcs.busy = cmdbusy_i;
     abstractcs.cmderr = cmderr_q;
+    // relaxedpriv is WARL (Debug Spec 1.0 #536): only full permission checks are
+    // supported, so it is tied to 0 and a debugger writing 1 reads back 0.
+    abstractcs.relaxedpriv = 1'b0;
 
     // abstractautoexec
     abstractauto_d = abstractauto_q;

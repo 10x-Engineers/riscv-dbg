@@ -180,7 +180,7 @@ package dm;
     logic [28:24] progbufsize;
     logic [23:13] zero2;
     logic         busy;
-    logic         zero1;
+    logic         relaxedpriv;
     cmderr_e      cmderr;
     logic [7:4]   zero0;
     logic [3:0]   datacount;
