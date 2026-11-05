@@ -662,6 +662,8 @@ module dm_csrs #(
     // If NrHarts = 1 this is just masked to all-zeros.
     {dmcontrol_d.hartselhi, dmcontrol_d.hartsello} &= HartSelMask;
     // static values for dcsr
+    // [28:23] are reserved: an sbcs write copies the whole word, so clear them
+    sbcs_d.zero0                = '0;
     sbcs_d.sbversion            = 3'd1;
     sbcs_d.sbbusy               = sbbusy_i;
     sbcs_d.sbasize              = $bits(sbcs_d.sbasize)'(BusWidth);
