@@ -284,22 +284,27 @@ module dm_csrs #(
     dmstatus.allresumeack = resumeack_aligned[selected_hart];
     dmstatus.anyresumeack = resumeack_aligned[selected_hart];
 
-    dmstatus.stickyunavail = 1'b1;
-    dmstatus.allunavail   = unavail_reported[selected_hart];
-    dmstatus.anyunavail   = unavail_reported[selected_hart];
-
     // as soon as we are out of the legal Hart region tell the debugger
     // that there are only non-existent harts
     dmstatus.allnonexistent = logic'(32'(hartsel_o) > (NrHarts - 1));
     dmstatus.anynonexistent = logic'(32'(hartsel_o) > (NrHarts - 1));
 
     // We are not allowed to be in multiple states at once. This is a to
-    // make the running/halted and unavailable states exclusive.
-    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavail_reported[selected_hart];
-    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavail_reported[selected_hart];
+    // make the running/halted and unavailable states exclusive. A nonexistent
+    // selection reads a zero padding slot, which would otherwise look running.
+    dmstatus.stickyunavail = 1'b1;
+    dmstatus.allunavail   = unavail_reported[selected_hart] & ~dmstatus.allnonexistent;
+    dmstatus.anyunavail   = unavail_reported[selected_hart] & ~dmstatus.anynonexistent;
 
-    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavail_reported[selected_hart];
-    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavail_reported[selected_hart];
+    dmstatus.allhalted    = halted_aligned[selected_hart] & ~unavail_reported[selected_hart] &
+                            ~dmstatus.allnonexistent;
+    dmstatus.anyhalted    = halted_aligned[selected_hart] & ~unavail_reported[selected_hart] &
+                            ~dmstatus.anynonexistent;
+
+    dmstatus.allrunning   = ~halted_aligned[selected_hart] & ~unavail_reported[selected_hart] &
+                            ~dmstatus.allnonexistent;
+    dmstatus.anyrunning   = ~halted_aligned[selected_hart] & ~unavail_reported[selected_hart] &
+                            ~dmstatus.anynonexistent;
 
     // abstractcs
     abstractcs = '0;
